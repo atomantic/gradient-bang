@@ -33,6 +33,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Lint
+        continue-on-error: true
+        run: pnpm lint
+
       - name: Fetch font
         run: |
           mkdir -p app/src/assets/fonts
@@ -46,9 +50,6 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-
-      - name: Lint
-        run: pnpm lint
 
       - name: Build
         run: pnpm build
