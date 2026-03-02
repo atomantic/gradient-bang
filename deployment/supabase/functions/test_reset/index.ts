@@ -124,6 +124,11 @@ const PINNED_SECTORS: Record<string, number> = {
   // Query endpoint tests: sector 0
   test_query_p1: 0,
   test_query_p2: 0,
+  // Event deduplication tests: sector 0 (mega-port for corp creation)
+  test_events_p1: 0,
+  test_events_p2: 0,
+  test_events_p3: 0,
+  test_events_p4: 0,
 };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");

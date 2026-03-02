@@ -50,7 +50,7 @@ cleanup() {
 
   if [ -n "$TEST_WORKDIR" ] && [ -d "$TEST_WORKDIR" ]; then
     echo "    Stopping Supabase (project: $PROJECT_ID)..."
-    npx supabase stop --workdir "$TEST_WORKDIR" 2>/dev/null || true
+    npx supabase stop --workdir "$TEST_WORKDIR" --no-backup 2>/dev/null || true
     echo "    Removing temp workdir: $TEST_WORKDIR"
     rm -rf "$TEST_WORKDIR"
   fi

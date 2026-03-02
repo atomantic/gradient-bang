@@ -806,7 +806,15 @@ class VoiceTaskManager:
 
     def _is_direct_recipient_event(self, ctx: Optional[Mapping[str, Any]]) -> bool:
         recipient_reason = self._resolve_recipient_reason(ctx, self.character_id)
-        return recipient_reason in {"direct", "task_owner", "recipient"}
+        if recipient_reason in {"direct", "task_owner", "recipient"}:
+            return True
+        # Merged corp row: when the event subject is a corp member, the corp row
+        # carries recipient_character_id = subject. If it matches us, treat as direct.
+        if ctx and self.character_id:
+            ctx_char = ctx.get("character_id")
+            if isinstance(ctx_char, str) and ctx_char == self.character_id:
+                return True
+        return False
 
     def _cancel_active_tasks_for_combat(self) -> list[str]:
         cancelled_task_ids: list[str] = []
