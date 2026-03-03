@@ -27,6 +27,7 @@ import {
   RateLimitError,
 } from "../_shared/rate_limiting.ts";
 import { parseJsonRequest, respondWithError } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 // CORS headers for public access from web clients
 const corsHeaders = {
@@ -47,7 +48,7 @@ function corsResponse(body: unknown, status = 200): Response {
   });
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("start", async (req, trace) => {
   // Check for required environment variable
   const botStartUrl =
     Deno.env.get("BOT_START_URL") || "http://host.docker.internal:7860/start";
@@ -90,10 +91,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const supabase = createServiceRoleClient();
 
   // Authenticate user from JWT
+  const sAuth = trace.span("auth_check");
   let user;
   try {
     user = await getAuthenticatedUser(req);
+    sAuth.end({ user_id: user.id });
   } catch (err) {
+    sAuth.end({ error: err instanceof Error ? err.message : String(err) });
     console.error("start.auth", err);
     return corsResponse(
       {
@@ -105,9 +109,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // Apply rate limiting (per user)
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforcePublicRateLimit(supabase, req, "start");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       console.warn("start.rate_limit", err.message);
       return corsResponse(
@@ -122,10 +129,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Parse request body (only for methods that support body)
     let requestData = null;
     if (["POST", "PUT", "PATCH"].includes(req.method)) {
+      const sParse = trace.span("parse_request");
       try {
         const body = await parseJsonRequest(req);
         requestData = body;
+        sParse.end();
       } catch (err) {
+        sParse.end({ error: err instanceof Error ? err.message : String(err) });
         console.error("start.parse_request", err);
         return corsResponse(
           { success: false, error: "Invalid request body" },
@@ -159,6 +169,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
 
       // Verify character belongs to authenticated user via junction table
+      const sCharacterCheck = trace.span("verify_character_ownership");
       const { data: characterData, error: characterError } = await supabase
         .from("user_characters")
         .select("character_id")
@@ -167,6 +178,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         .maybeSingle();
 
       if (characterError) {
+        sCharacterCheck.end({ error: characterError.message });
         console.error("start.character_lookup", characterError);
         return corsResponse(
           { success: false, error: "Failed to verify character ownership" },
@@ -175,6 +187,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
 
       if (!characterData) {
+        sCharacterCheck.end({ error: "Character not found" });
         return corsResponse(
           {
             success: false,
@@ -183,6 +196,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
           404,
         );
       }
+      sCharacterCheck.end({ character_id: characterId });
     } else if (action === "proxy_session") {
       // Proxying to existing session - forward as /sessions/{id} on bot
       // e.g., /functions/v1/start/abc/api/offer -> http://bot/sessions/abc/api/offer
@@ -202,6 +216,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     // Forward request to bot service with original method
+    const sBotProxy = trace.span("bot_proxy", { action, endpoint: botEndpoint! });
     let botResponse;
     try {
       const headers: HeadersInit = {
@@ -226,6 +241,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       botResponse = await fetch(botEndpoint, fetchOptions);
 
       if (!botResponse.ok) {
+        sBotProxy.end({ error: `Bot returned status ${botResponse.status}` });
         console.error(
           "start.bot_request_failed",
           `Bot returned status ${botResponse.status} for action: ${action}`,
@@ -236,6 +252,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         );
       }
     } catch (err) {
+      sBotProxy.end({ error: err instanceof Error ? err.message : String(err) });
       console.error("start.bot_request_error", err);
       return corsResponse(
         {
@@ -249,12 +266,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Return exactly what the bot endpoint returns
     try {
       const botResponseData = await botResponse.json();
+      sBotProxy.end({ status: botResponse.status });
       console.log("start.bot_request_success", {
         action,
         data: botResponseData,
       });
       return corsResponse(botResponseData, botResponse.status);
     } catch (err) {
+      sBotProxy.end({ error: "Invalid response from bot service" });
       console.error("start.bot_response_parse_error", err);
       return corsResponse(
         { success: false, error: "Invalid response from bot service" },
@@ -268,4 +287,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
       500,
     );
   }
-});
+}));

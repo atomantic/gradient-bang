@@ -55,6 +55,7 @@ import {
   respondWithError,
 } from "../_shared/request.ts";
 import type { Client } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
+import { traced } from "../_shared/weave.ts";
 
 class TradeError extends Error {
   status: number;
@@ -69,7 +70,7 @@ class TradeError extends Error {
 // Optimistic concurrency control: Retry attempts for port inventory updates
 const MAX_PORT_ATTEMPTS = 15;
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("trade", async (req, wt) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -115,13 +116,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
   };
 
   try {
+    const sPgConnect = wt.span("pg_connect");
     await pgClient.connect();
     mark("pg_connect");
+    sPgConnect.end();
 
+    const sRateLimit = wt.span("rate_limit");
     try {
       await pgEnforceRateLimit(pgClient, characterId, "trade");
       mark("rate_limit");
+      sRateLimit.end();
     } catch (err) {
+      sRateLimit.end({ error: String(err) });
       if (err instanceof Error && err.message.includes("rate limit")) {
         await emitErrorEvent(supabase, {
           characterId,
@@ -136,7 +142,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return errorResponse("rate limit error", 500);
     }
 
-    return await handleTrade({
+    const sHandleTrade = wt.span("handle_trade", { character_id: characterId });
+    const result = await handleTrade({
       pgClient,
       supabase,
       payload,
@@ -148,6 +155,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       trace,
       mark,
     });
+    sHandleTrade.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -191,7 +200,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // Ignore cleanup errors
     }
   }
-});
+}));
 
 async function handleTrade({
   pgClient,

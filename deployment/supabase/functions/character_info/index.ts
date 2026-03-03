@@ -15,6 +15,7 @@ import {
   respondWithError,
 } from "../_shared/request.ts";
 import { canonicalizeCharacterId } from "../_shared/ids.ts";
+import { traced } from "../_shared/weave.ts";
 
 /**
  * Public endpoint for looking up character information by character_id.
@@ -24,16 +25,22 @@ import { canonicalizeCharacterId } from "../_shared/ids.ts";
  *
  * Returns: character_id, name, created_at
  */
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("character_info", async (req, trace) => {
+  const sAuth = trace.span("auth_check");
   if (!validateApiToken(req)) {
+    sAuth.end({ error: "unauthorized" });
     return unauthorizedResponse();
   }
+  sAuth.end();
 
   const supabase = createServiceRoleClient();
   let payload;
+  const sParse = trace.span("parse_request");
   try {
     payload = await parseJsonRequest(req);
+    sParse.end();
   } catch (err) {
+    sParse.end({ error: err instanceof Error ? err.message : String(err) });
     const response = respondWithError(err);
     if (response) {
       return response;
@@ -60,9 +67,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // Rate limit per character lookup (prevents abuse)
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "character_info");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       return errorResponse("Too many character_info requests", 429);
     }
@@ -71,6 +81,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // Query character profile from database
+  const sQuery = trace.span("query_character", { characterId });
   try {
     const { data, error } = await supabase
       .from("characters")
@@ -79,6 +90,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .single();
 
     if (error) {
+      sQuery.end({ error: error.message });
       console.error("character_info.query", error);
       if (error.code === "PGRST116") {
         // PostgreSQL error code for no rows returned
@@ -88,16 +100,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     if (!data) {
+      sQuery.end({ error: "not found" });
       return errorResponse(`Character not found: ${characterId}`, 404);
     }
 
+    sQuery.end({ name: data.name });
     return successResponse({
       character_id: data.character_id,
       name: data.name,
       created_at: data.created_at,
     });
   } catch (err) {
+    sQuery.end({ error: err instanceof Error ? err.message : String(err) });
     console.error("character_info.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));

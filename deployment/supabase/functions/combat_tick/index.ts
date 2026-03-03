@@ -10,10 +10,11 @@ import { createServiceRoleClient } from "../_shared/client.ts";
 import { listDueCombats } from "../_shared/combat_state.ts";
 import { resolveEncounterRound } from "../_shared/combat_resolution.ts";
 import { parseJsonRequest, respondWithError } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 const MAX_BATCH = Number(Deno.env.get("COMBAT_TICK_BATCH_SIZE") ?? "20");
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("combat_tick", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -42,9 +43,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const nowIso = new Date().toISOString();
 
   try {
+    const sListDue = trace.span("list_due_combats");
     const encounters = await listDueCombats(supabase, nowIso, MAX_BATCH);
+    sListDue.end({ count: encounters.length });
+
     let resolved = 0;
     for (const encounter of encounters) {
+      const sResolve = trace.span("resolve_round", { combat_id: encounter.combat_id });
       try {
         await resolveEncounterRound({
           supabase,
@@ -53,7 +58,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
           source: "combat.tick",
         });
         resolved += 1;
+        sResolve.end({ success: true });
       } catch (err) {
+        sResolve.end({ error: String(err) });
         console.error("combat_tick.resolve_failed", {
           combat_id: encounter.combat_id,
           error: err,
@@ -71,4 +78,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("combat_tick.error", err);
     return errorResponse("combat tick error", 500);
   }
-});
+}));

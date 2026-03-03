@@ -18,6 +18,7 @@ import {
   optionalString,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 class ResetPortsError extends Error {
   status: number;
@@ -29,7 +30,7 @@ class ResetPortsError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("reset_ports", async (req, trace) => {
   const supabase = createServiceRoleClient();
   let payload;
 
@@ -59,8 +60,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   try {
     // Call the stored procedure to reset all ports
+    const sRpc = trace.span("reset_all_ports_rpc");
     const { data: portsReset, error: resetError } =
       await supabase.rpc("reset_all_ports");
+    sRpc.end();
 
     if (resetError) {
       console.error("reset_ports.rpc", resetError);
@@ -104,4 +107,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));

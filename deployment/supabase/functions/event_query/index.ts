@@ -18,6 +18,7 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 const MAX_QUERY_RESULTS = 100;
 const DEFAULT_LIMIT = 100;
@@ -69,7 +70,7 @@ class EventQueryError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("event_query", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -97,7 +98,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const requestId = resolveRequestId(payload);
 
   try {
+    const sExecuteQuery = trace.span("execute_event_query");
     const result = await executeEventQuery(supabase, payload);
+    sExecuteQuery.end();
 
     // Emit event with query results so TaskAgent can receive them via WebSocket
     // This follows the same pattern as my_status and other async tools
@@ -117,6 +120,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (targetCharacterId) {
       const source = buildEventSource("event_query", requestId);
       const taskId = optionalString(payload, "task_id");
+      const sEmit = trace.span("emit_event");
       try {
         // Load character and ship to get the correct ship_id for event routing
         const character = await loadCharacter(supabase, targetCharacterId);
@@ -130,11 +134,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
           taskId,
           shipId: ship.ship_id,
         });
+        sEmit.end();
         console.log("[Info] event_query.emit_success", {
           targetCharacterId,
           requestId,
         });
       } catch (emitErr) {
+        sEmit.end();
         console.error("[Error] event_query.emit_failed", {
           targetCharacterId,
           requestId,
@@ -156,7 +162,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("event_query.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function executeEventQuery(
   supabase: SupabaseClient,

@@ -18,6 +18,7 @@ import {
 } from "../_shared/request.ts";
 import { computeCorpMemberRecipients } from "../_shared/visibility.ts";
 import { validate as validateUuid } from "https://deno.land/std@0.197.0/uuid/mod.ts";
+import { traced } from "../_shared/weave.ts";
 
 /**
  * Task lifecycle event emitter.
@@ -29,7 +30,7 @@ import { validate as validateUuid } from "https://deno.land/std@0.197.0/uuid/mod
  * - task.start: When a task begins, includes task description
  * - task.finish: When a task completes, includes summary/result
  */
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("task_lifecycle", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -90,6 +91,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const actorCharacterId = actorCharacterIdRaw ?? characterId;
     eventPayload.actor_character_id = actorCharacterId;
 
+    const sLoadState = trace.span("load_state");
     if (actorCharacterNameRaw) {
       eventPayload.actor_character_name = actorCharacterNameRaw;
     } else {
@@ -177,6 +179,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         }
       }
     }
+    sLoadState.end();
 
     eventPayload.task_scope = taskScope;
     if (shipId) eventPayload.ship_id = shipId;
@@ -196,6 +199,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     // Server-side corp lookup for visibility
+    const sCorpLookup = trace.span("corp_lookup");
     // First check corp membership
     const { data: membership } = await supabase
       .from("corporation_members")
@@ -233,8 +237,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         [characterId], // exclude the acting character
       );
     }
+    sCorpLookup.end();
 
     // Emit the task lifecycle event
+    const sEmit = trace.span("emit_event");
     await emitCharacterEvent({
       supabase,
       characterId,
@@ -249,6 +255,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       scope: "self",
       additionalRecipients, // Corp members added here
     });
+    sEmit.end();
 
     return successResponse({
       request_id: requestId,
@@ -265,7 +272,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       err instanceof Error ? err.message : "task lifecycle event failed";
     return errorResponse(detail, 500);
   }
-});
+}));
 
 function parseShipIdInput(value: string): {
   shipId: string | null;

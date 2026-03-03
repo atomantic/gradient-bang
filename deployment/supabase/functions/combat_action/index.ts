@@ -39,8 +39,9 @@ import {
   computeNextCombatDeadline,
   resolveEncounterRound,
 } from "../_shared/combat_resolution.ts";
+import { traced } from "../_shared/weave.ts";
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("combat_action", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -76,9 +77,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "combat_action");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: String(err) });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -94,7 +98,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    return await handleCombatAction({
+    const sHandle = trace.span("handle_combat_action", { character_id: characterId, combat_id: combatId });
+    const result = await handleCombatAction({
       supabase,
       requestId,
       characterId,
@@ -108,6 +113,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     });
+    sHandle.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -134,7 +141,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse(message, status);
   }
-});
+}));
 
 async function handleCombatAction(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

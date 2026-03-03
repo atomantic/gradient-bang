@@ -39,6 +39,7 @@ import {
   loadUniverseMeta,
   isMegaPortSector,
 } from "../_shared/fedspace.ts";
+import { traced } from "../_shared/weave.ts";
 
 class PurchaseFightersError extends Error {
   status: number;
@@ -50,7 +51,7 @@ class PurchaseFightersError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("purchase_fighters", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -85,9 +86,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "purchase_fighters");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: "rate_limited" });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -103,7 +107,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    return await handlePurchase(
+    const sHandlePurchase = trace.span("handle_purchase");
+    const result = await handlePurchase(
       supabase,
       payload,
       characterId,
@@ -113,6 +118,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     );
+    sHandlePurchase.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -144,7 +151,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handlePurchase(
   supabase: ReturnType<typeof createServiceRoleClient>,

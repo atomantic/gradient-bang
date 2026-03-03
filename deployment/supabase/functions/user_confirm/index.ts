@@ -17,6 +17,7 @@ import {
   requireString,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 // CORS headers for public access from web clients
 const corsHeaders = {
@@ -37,7 +38,7 @@ function corsResponse(body: unknown, status = 200): Response {
   });
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("user_confirm", async (req, trace) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -46,9 +47,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const serviceClient = createServiceRoleClient();
 
   // Apply IP-based rate limiting
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforcePublicRateLimit(serviceClient, req, "user_confirm");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       console.warn("user_confirm.rate_limit", err.message);
       return corsResponse(
@@ -67,9 +71,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   let payload;
+  const sParse = trace.span("parse_request");
   try {
     payload = await parseJsonRequest(req);
+    sParse.end();
   } catch (err) {
+    sParse.end({ error: err instanceof Error ? err.message : String(err) });
     const response = respondWithError(err);
     if (response) {
       return corsResponse(await response.json(), response.status);
@@ -96,12 +103,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const supabase = createPublicClient();
 
     // Set the session using tokens from the invite redirect
+    const sSetSession = trace.span("set_session");
     const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
       access_token: accessToken,
       refresh_token: refreshToken,
     });
 
     if (sessionError) {
+      sSetSession.end({ error: sessionError.message });
       console.error("user_confirm.set_session", sessionError);
       return corsResponse(
         { success: false, error: "Invalid or expired token" },
@@ -110,24 +119,29 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     if (!sessionData.user) {
+      sSetSession.end({ error: "No user in session" });
       return corsResponse(
         { success: false, error: "Failed to verify session" },
         401,
       );
     }
+    sSetSession.end({ user_id: sessionData.user.id });
 
     // Update the user's password (now that we have an active session)
+    const sUpdatePassword = trace.span("update_password");
     const { error: updateError } = await supabase.auth.updateUser({
       password,
     });
 
     if (updateError) {
+      sUpdatePassword.end({ error: updateError.message });
       console.error("user_confirm.update_password", updateError);
       return corsResponse(
         { success: false, error: "Failed to set password: " + updateError.message },
         400,
       );
     }
+    sUpdatePassword.end();
 
     return corsResponse(
       {
@@ -155,4 +169,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
       500,
     );
   }
-});
+}));

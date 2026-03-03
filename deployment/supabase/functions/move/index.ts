@@ -26,6 +26,7 @@ import {
 import { canonicalizeCharacterId } from "../_shared/ids.ts";
 import { ActorAuthorizationError } from "../_shared/actors.ts";
 import { checkGarrisonAutoEngage } from "../_shared/garrison_combat.ts";
+import { traced } from "../_shared/weave.ts";
 import { deserializeCombat } from "../_shared/combat_state.ts";
 import type {
   CharacterRow,
@@ -68,7 +69,7 @@ const MOVE_DELAY_SCALE = Number(Deno.env.get("MOVE_DELAY_SCALE") ?? "1");
 const MAX_LOCAL_MAP_HOPS = 4;
 const MAX_LOCAL_MAP_NODES = 28;
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("move", async (req, wt) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -82,10 +83,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
   };
 
   try {
+    const sPgConnect = wt.span("pg_connect");
     try {
       await pgClient.connect();
       mark("pg_connect");
+      sPgConnect.end();
     } catch (pgConnectError) {
+      sPgConnect.end({ error: String(pgConnectError) });
       console.error("move.pg_connect_error", pgConnectError);
       return errorResponse(
         `Failed to connect to database: ${pgConnectError instanceof Error ? pgConnectError.message : "unknown error"}`,
@@ -134,10 +138,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
     const destination = toSector;
 
+    const sRateLimit = wt.span("rate_limit");
     try {
       await pgEnforceRateLimit(pgClient, characterId, "move");
       mark("rate_limit");
+      sRateLimit.end();
     } catch (err) {
+      sRateLimit.end({ error: String(err) });
       if (err instanceof RateLimitError) {
         await emitErrorEvent(supabase, {
           characterId,
@@ -165,7 +172,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
       mark,
     } as const;
 
+    const sHandleMove = wt.span("handle_move", { character_id: characterId, destination });
     const result = await handleMove(moveContext);
+    sHandleMove.end();
     const tEnd = performance.now();
     trace["total"] = Math.round(tEnd - tStart);
     console.log("move.trace", {
@@ -183,7 +192,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // Already closed, ignore
     }
   }
-});
+}));
 
 async function handleMove({
   supabase,

@@ -21,6 +21,7 @@ import {
   requireString,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 // CORS headers for public access from web clients
 const corsHeaders = {
@@ -41,7 +42,7 @@ function corsResponse(body: unknown, status = 200): Response {
   });
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("login", async (req, trace) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -50,9 +51,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const serviceClient = createServiceRoleClient();
 
   // Apply IP-based rate limiting
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforcePublicRateLimit(serviceClient, req, "login");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       console.warn("login.rate_limit", err.message);
       return corsResponse(
@@ -71,9 +75,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   let payload;
+  const sParse = trace.span("parse_request");
   try {
     payload = await parseJsonRequest(req);
+    sParse.end();
   } catch (err) {
+    sParse.end({ error: err instanceof Error ? err.message : String(err) });
     const response = respondWithError(err);
     if (response) {
       return corsResponse(await response.json(), response.status);
@@ -91,12 +98,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const publicClient = createPublicClient();
 
     // Sign in user with Supabase Auth
+    const sSignin = trace.span("auth_signin");
     const { data, error } = await publicClient.auth.signInWithPassword({
       email,
       password,
     });
 
     if (error) {
+      sSignin.end({ error: error.message });
       console.error("login.signin", error);
       return corsResponse(
         { success: false, error: "Invalid email or password" },
@@ -105,16 +114,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     if (!data.user || !data.session) {
+      sSignin.end({ error: "Authentication failed" });
       return corsResponse(
         { success: false, error: "Authentication failed" },
         401,
       );
     }
+    sSignin.end({ user_id: data.user.id });
 
     // Check if email is confirmed
     const emailConfirmed = !!data.user.email_confirmed_at;
 
     // Query user's characters using service role client via junction table
+    const sCharacters = trace.span("query_characters");
     const { data: characters, error: charactersError } = await serviceClient
       .from("user_characters")
       .select(
@@ -134,7 +146,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     if (charactersError) {
       console.error("login.characters", charactersError);
+      sCharacters.end({ error: charactersError.message });
       // Don't fail login if character query fails, just return empty list
+    } else {
+      sCharacters.end({ count: (characters || []).length });
     }
 
     // Transform the junction table result to flat character list
@@ -174,4 +189,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
       500,
     );
   }
-});
+}));

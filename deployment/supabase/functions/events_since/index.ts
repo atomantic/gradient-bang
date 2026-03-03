@@ -18,6 +18,7 @@ import {
   RequestValidationError,
 } from "../_shared/request.ts";
 import { canonicalizeCharacterId } from "../_shared/ids.ts";
+import { traced } from "../_shared/weave.ts";
 
 const MAX_LIMIT = 250;
 const DEFAULT_LIMIT = 100;
@@ -48,7 +49,7 @@ interface EventRow {
   is_broadcast: boolean;
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("events_since", async (req, trace) => {
   const tStart = performance.now();
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
@@ -77,7 +78,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const supabase = createServiceRoleClient();
 
   try {
+    const sHandle = trace.span("handle_events_since_request");
     const result = await handleEventsSinceRequest(supabase, payload);
+    sHandle.end({ event_count: result.events.length, has_more: result.has_more });
     const tEnd = performance.now();
     console.log("events_since.timing", {
       request_id: requestId,
@@ -114,7 +117,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleEventsSinceRequest(
   supabase: SupabaseClient,

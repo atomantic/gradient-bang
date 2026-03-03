@@ -20,6 +20,7 @@ import {
   optionalNumber,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 const DEFAULT_FRACTION = 0.25;
 
@@ -33,7 +34,7 @@ class RegeneratePortsError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("regenerate_ports", async (req, trace) => {
   const supabase = createServiceRoleClient();
   let payload;
 
@@ -74,10 +75,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     // Call the stored procedure to regenerate ports
+    const sRpc = trace.span("regenerate_ports_rpc");
     const { data: portsRegenerated, error: regenError } = await supabase.rpc(
       "regenerate_ports",
       { fraction },
     );
+    sRpc.end();
 
     if (regenError) {
       console.error("regenerate_ports.rpc", regenError);
@@ -124,4 +127,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));

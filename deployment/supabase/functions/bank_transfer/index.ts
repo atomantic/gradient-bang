@@ -43,6 +43,7 @@ import {
 } from "../_shared/request.ts";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { validate as validateUuid } from "https://deno.land/std@0.197.0/uuid/mod.ts";
+import { traced } from "../_shared/weave.ts";
 
 class BankTransferError extends Error {
   status: number;
@@ -54,7 +55,7 @@ class BankTransferError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("bank_transfer", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -92,9 +93,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const characterIdForErrors =
     optionalString(payload, "character_id") ?? actorCharacterId;
 
+  const sHandle = trace.span("handle_bank_transfer", { direction });
   try {
+    let result: Response;
     if (direction === "deposit") {
-      return await handleDeposit(
+      result = await handleDeposit(
         supabase,
         payload,
         requestId,
@@ -102,9 +105,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
         adminOverride,
         taskId,
       );
-    }
-    if (direction === "withdraw") {
-      return await handleWithdraw(
+    } else if (direction === "withdraw") {
+      result = await handleWithdraw(
         supabase,
         payload,
         requestId,
@@ -112,12 +114,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
         adminOverride,
         taskId,
       );
+    } else {
+      throw new BankTransferError(
+        "direction must be 'deposit' or 'withdraw'",
+        400,
+      );
     }
-    throw new BankTransferError(
-      "direction must be 'deposit' or 'withdraw'",
-      400,
-    );
+    sHandle.end();
+    return result;
   } catch (err) {
+    sHandle.end();
     // Only emit error event if we have a valid character ID
     const shouldEmitError = characterIdForErrors !== null;
 
@@ -183,7 +189,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleDeposit(
   supabase: SupabaseClient,

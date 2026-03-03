@@ -40,6 +40,7 @@ import {
   respondWithError,
 } from "../_shared/request.ts";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { traced } from "../_shared/weave.ts";
 
 class TransferWarpPowerError extends Error {
   status: number;
@@ -78,7 +79,7 @@ type TransferTarget = {
   };
 };
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("transfer_warp_power", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -128,9 +129,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, fromCharacterId, "transfer_warp_power");
   } catch (err) {
+    sRateLimit.end();
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId: fromCharacterId,
@@ -144,9 +147,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("transfer_warp_power.rate_limit", err);
     return errorResponse("rate limit error", 500);
   }
+  sRateLimit.end();
 
+  const sHandle = trace.span("handle_transfer");
   try {
-    return await handleTransfer(
+    const result = await handleTransfer(
       supabase,
       payload,
       fromCharacterId,
@@ -156,7 +161,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     );
+    sHandle.end();
+    return result;
   } catch (err) {
+    sHandle.end();
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
         characterId: fromCharacterId,
@@ -187,7 +195,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleTransfer(
   supabase: SupabaseClient,

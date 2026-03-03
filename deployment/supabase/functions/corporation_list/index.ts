@@ -14,6 +14,7 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 class CorporationListError extends Error {
   status: number;
@@ -25,7 +26,7 @@ class CorporationListError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("corporation_list", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -54,9 +55,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const characterId = optionalString(payload, "character_id");
 
   if (characterId) {
+    const sRateLimit = trace.span("rate_limit");
     try {
       await enforceRateLimit(supabase, characterId, "corporation_list");
+      sRateLimit.end();
     } catch (err) {
+      sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
       if (err instanceof RateLimitError) {
         return errorResponse("Too many corporation requests", 429);
       }
@@ -66,7 +70,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const sLoadSummaries = trace.span("load_corporation_summaries");
     const corporations = await loadCorporationSummaries(supabase);
+    sLoadSummaries.end({ count: corporations.length });
     return successResponse({ corporations, request_id: requestId });
   } catch (err) {
     if (err instanceof CorporationListError) {
@@ -75,7 +81,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("corporation_list.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function loadCorporationSummaries(
   supabase: ReturnType<typeof createServiceRoleClient>,

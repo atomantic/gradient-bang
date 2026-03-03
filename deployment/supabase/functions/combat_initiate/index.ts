@@ -45,6 +45,7 @@ import {
 } from "../_shared/combat_events.ts";
 import { computeNextCombatDeadline } from "../_shared/combat_resolution.ts";
 import { computeEventRecipients } from "../_shared/visibility.ts";
+import { traced } from "../_shared/weave.ts";
 
 const MIN_PARTICIPANTS = 2;
 
@@ -62,7 +63,7 @@ function generateCombatId(): string {
   return crypto.randomUUID().replace(/-/g, "");
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("combat_initiate", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -94,9 +95,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const debug = optionalBoolean(payload, "debug") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "combat_initiate");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: String(err) });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -112,7 +116,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    return await handleCombatInitiate({
+    const sHandle = trace.span("handle_combat_initiate", { character_id: characterId });
+    const result = await handleCombatInitiate({
       supabase,
       payload,
       characterId,
@@ -122,6 +127,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       debug,
       taskId,
     });
+    sHandle.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -149,7 +156,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse(message, status);
   }
-});
+}));
 
 async function handleCombatInitiate(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

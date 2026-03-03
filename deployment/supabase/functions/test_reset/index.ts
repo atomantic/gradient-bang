@@ -17,6 +17,7 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 const DEFAULT_RESET_RESPONSE = {
   cleared_tables: 0,
@@ -210,7 +211,7 @@ class TestResetError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("test_reset", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -240,7 +241,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const characterIds = parseCharacterIds(payload["character_ids"]);
     const clearFiles = optionalBoolean(payload, "clear_files");
 
+    const sReset = trace.span("reset_supabase_state");
     const result = await resetSupabaseState({ characterIds });
+    sReset.end();
     result.clear_files = clearFiles === false ? false : true;
 
     return successResponse({ request_id: requestId, ...result });
@@ -255,7 +258,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("test_reset.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function resetSupabaseState(params: {
   characterIds: string[] | null;

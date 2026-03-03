@@ -30,6 +30,7 @@ import {
   markCorporationMembershipLeft,
 } from "../_shared/corporations.ts";
 import { canonicalizeCharacterId } from "../_shared/ids.ts";
+import { traced } from "../_shared/weave.ts";
 
 class CorporationLeaveError extends Error {
   status: number;
@@ -41,7 +42,7 @@ class CorporationLeaveError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("corporation_leave", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -81,9 +82,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const taskId = optionalString(payload, "task_id");
   ensureActorMatches(actorCharacterId, characterId);
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "corporation_leave");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -99,6 +103,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const sHandleLeave = trace.span("handle_leave", { characterId });
     await handleLeave({
       supabase,
       characterId,
@@ -106,6 +111,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       requestId,
       taskId,
     });
+    sHandleLeave.end();
     return successResponse({ request_id: requestId });
   } catch (err) {
     if (err instanceof CorporationLeaveError) {
@@ -114,7 +120,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("corporation_leave.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleLeave(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

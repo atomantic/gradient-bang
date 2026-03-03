@@ -10,6 +10,7 @@
  */
 
 import { createServiceRoleClient } from "../_shared/client.ts";
+import { traced } from "../_shared/weave.ts";
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -42,7 +43,7 @@ class LeaderboardError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("leaderboard_resources", async (req, trace) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -63,6 +64,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       forceRefreshParam === "true" || forceRefreshParam === "1";
 
     // Check cache first
+    const sCacheCheck = trace.span("cache_check");
     const { data: cached, error: cacheError } = await supabase
       .from("leaderboard_cache")
       .select("*")
@@ -79,6 +81,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // No cache exists, need to refresh
       shouldRefresh = true;
     }
+    sCacheCheck.end();
 
     if (shouldRefresh) {
       console.log("leaderboard_resources.refreshing", {
@@ -89,6 +92,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       });
 
       // Query fresh data from views
+      const sQueryViews = trace.span("query_leaderboard_views");
       const [wealthResult, territoryResult, tradingResult, explorationResult] =
         await Promise.all([
           supabase
@@ -116,6 +120,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
             .order("sectors_visited", { ascending: false })
             .limit(100),
         ]);
+      sQueryViews.end();
 
       if (wealthResult.error) {
         console.error("leaderboard_resources.query.wealth", wealthResult.error);
@@ -153,6 +158,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
 
       // Update cache
+      const sUpdateCache = trace.span("update_cache");
       const { error: upsertError } = await supabase
         .from("leaderboard_cache")
         .upsert({
@@ -163,6 +169,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
           exploration: explorationResult.data ?? [],
           updated_at: new Date().toISOString(),
         });
+      sUpdateCache.end();
 
       if (upsertError) {
         console.error("leaderboard_resources.cache.upsert", upsertError);
@@ -199,4 +206,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
       500,
     );
   }
-});
+}));

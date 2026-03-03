@@ -19,6 +19,7 @@ import {
   optionalString,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 class CharacterDeleteError extends Error {
   status: number;
@@ -30,7 +31,7 @@ class CharacterDeleteError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("character_delete", async (req, trace) => {
   const supabase = createServiceRoleClient();
   let payload;
 
@@ -46,8 +47,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // Validate admin password
+  const sAuth = trace.span("validate_admin");
   const adminPassword = optionalString(payload, "admin_password");
   const isValid = await validateAdminSecret(adminPassword);
+  sAuth.end({ valid: isValid });
   if (!isValid) {
     await logAdminAction(supabase, {
       action: "character_delete",
@@ -62,6 +65,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const characterId = requireString(payload, "character_id");
 
     // Check if character exists
+    const sLoadChar = trace.span("load_character", { characterId });
     const { data: character, error: checkError } = await supabase
       .from("characters")
       .select("character_id, name")
@@ -69,6 +73,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .maybeSingle();
 
     if (checkError) {
+      sLoadChar.end({ error: checkError.message });
       console.error("character_delete.check", checkError);
       throw new CharacterDeleteError(
         "Failed to check character existence",
@@ -77,16 +82,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     if (!character) {
+      sLoadChar.end({ error: "not_found" });
       throw new CharacterDeleteError("Character not found", 404);
     }
+    sLoadChar.end({ found: true });
 
     // Call the stored procedure to delete character and cascade
+    const sCascade = trace.span("delete_character_cascade", { characterId });
     const { data: deleteResult, error: deleteError } = await supabase.rpc(
       "delete_character_cascade",
       { char_id: characterId },
     );
 
     if (deleteError) {
+      sCascade.end({ error: deleteError.message });
       console.error("character_delete.cascade", deleteError);
       throw new CharacterDeleteError("Failed to delete character", 500);
     }
@@ -94,8 +103,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Extract counts from stored procedure result
     const shipsDeleted = deleteResult?.ships_deleted ?? 0;
     const garrisonsDeleted = deleteResult?.garrisons_deleted ?? 0;
+    sCascade.end({ shipsDeleted, garrisonsDeleted });
 
     // Additional cleanup: Remove from corporations if member
+    const sCorpCleanup = trace.span("corporation_cleanup", { characterId });
     const { data: membership, error: membershipError } = await supabase
       .from("corporation_members")
       .select("corporation_id")
@@ -124,6 +135,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
           .delete()
           .eq("corporation_id", corporationId);
       }
+      sCorpCleanup.end({ corporationId, disbanded: remainingMembers?.length === 0 });
+    } else {
+      sCorpCleanup.end({ noMembership: true });
     }
 
     // Log successful deletion
@@ -161,4 +175,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));

@@ -36,6 +36,7 @@ import { computeSectorVisibilityRecipients } from "../_shared/visibility.ts";
 import { recordEventWithRecipients } from "../_shared/events.ts";
 import type { SalvageEntry } from "../_shared/salvage.ts";
 import { buildSectorSnapshot } from "../_shared/map.ts";
+import { traced } from "../_shared/weave.ts";
 
 const VALID_COMMODITIES = new Set([
   "quantum_foam",
@@ -50,7 +51,7 @@ const COMMODITY_TO_COLUMN: Record<string, string> = {
   neuro_symbolics: "ns",
 };
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("salvage_collect", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -82,9 +83,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "salvage_collect");
   } catch (err) {
+    sRateLimit.end();
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -98,9 +101,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("salvage_collect.rate_limit", err);
     return errorResponse("rate limit error", 500);
   }
+  sRateLimit.end();
 
+  const sHandle = trace.span("handle_salvage_collect");
   try {
-    return await handleSalvageCollect({
+    const result = await handleSalvageCollect({
       supabase,
       requestId,
       characterId,
@@ -109,7 +114,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     });
+    sHandle.end();
+    return result;
   } catch (err) {
+    sHandle.end();
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -136,7 +144,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse(detail, status);
   }
-});
+}));
 
 async function handleSalvageCollect(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

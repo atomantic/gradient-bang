@@ -21,6 +21,7 @@ import {
   optionalNumber,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 interface CharacterModifyPayload {
   name?: string;
@@ -64,7 +65,7 @@ class CharacterModifyError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("character_modify", async (req, trace) => {
   const supabase = createServiceRoleClient();
   let payload;
 
@@ -80,8 +81,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // Validate admin password
+  const sAuth = trace.span("validate_admin");
   const adminPassword = optionalString(payload, "admin_password");
   const isValid = await validateAdminSecret(adminPassword);
+  sAuth.end({ valid: isValid });
   if (!isValid) {
     await logAdminAction(supabase, {
       action: "character_modify",
@@ -97,6 +100,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const modifyData = payload as CharacterModifyPayload;
 
     // Verify character exists and get current ship
+    const sLoadChar = trace.span("load_character", { characterId });
     const { data: character, error: checkError } = await supabase
       .from("characters")
       .select("character_id, name, current_ship_id")
@@ -104,6 +108,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .maybeSingle();
 
     if (checkError) {
+      sLoadChar.end({ error: checkError.message });
       console.error("character_modify.check", checkError);
       throw new CharacterModifyError(
         "Failed to check character existence",
@@ -112,15 +117,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     if (!character) {
+      sLoadChar.end({ error: "not_found" });
       throw new CharacterModifyError("Character not found", 404);
     }
 
     if (!character.current_ship_id) {
+      sLoadChar.end({ error: "no_ship" });
       throw new CharacterModifyError("Character has no ship", 500);
     }
+    sLoadChar.end({ found: true });
 
     // Handle name change if provided
     if (modifyData.name && modifyData.name !== character.name) {
+      const sNameChange = trace.span("name_change", { newName: modifyData.name });
       // Check name uniqueness
       const { data: existingName, error: nameCheckError } = await supabase
         .from("characters")
@@ -129,11 +138,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
         .maybeSingle();
 
       if (nameCheckError) {
+        sNameChange.end({ error: nameCheckError.message });
         console.error("character_modify.name_check", nameCheckError);
         throw new CharacterModifyError("Failed to check name uniqueness", 500);
       }
 
       if (existingName) {
+        sNameChange.end({ error: "name_taken" });
         throw new CharacterModifyError(
           `Character name "${modifyData.name}" already exists`,
           409,
@@ -147,12 +158,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
         .eq("character_id", characterId);
 
       if (nameUpdateError) {
+        sNameChange.end({ error: nameUpdateError.message });
         console.error("character_modify.name_update", nameUpdateError);
         throw new CharacterModifyError("Failed to update character name", 500);
       }
+      sNameChange.end({ success: true });
     }
 
     // Load current ship state
+    const sLoadShip = trace.span("load_ship", { shipId: character.current_ship_id });
     const { data: currentShip, error: shipLoadError } = await supabase
       .from("ship_instances")
       .select("*")
@@ -160,9 +174,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .single();
 
     if (shipLoadError || !currentShip) {
+      sLoadShip.end({ error: shipLoadError?.message ?? "not_found" });
       console.error("character_modify.ship_load", shipLoadError);
       throw new CharacterModifyError("Failed to load current ship", 500);
     }
+    sLoadShip.end({ found: true });
 
     const shipRow = currentShip as ShipRow;
     let newShipId = shipRow.ship_id;
@@ -173,6 +189,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       modifyData.ship?.ship_type &&
       modifyData.ship.ship_type !== shipRow.ship_type
     ) {
+      const sShipTypeChange = trace.span("ship_type_change", { newType: modifyData.ship.ship_type });
       const newShipType = modifyData.ship.ship_type;
 
       // Validate new ship type exists
@@ -183,6 +200,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         .maybeSingle();
 
       if (shipDefError || !shipDef) {
+        sShipTypeChange.end({ error: "invalid_ship_type" });
         throw new CharacterModifyError(
           `Invalid ship type: ${newShipType}`,
           400,
@@ -211,6 +229,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         .single();
 
       if (newShipError || !newShip) {
+        sShipTypeChange.end({ error: newShipError?.message ?? "insert_failed" });
         console.error("character_modify.new_ship", newShipError);
         throw new CharacterModifyError("Failed to create new ship", 500);
       }
@@ -227,6 +246,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         console.error("character_modify.char_update", updateCharError);
         // Clean up new ship on failure
         await supabase.from("ship_instances").delete().eq("ship_id", newShipId);
+        sShipTypeChange.end({ error: updateCharError.message });
         throw new CharacterModifyError(
           "Failed to update character ship reference",
           500,
@@ -246,6 +266,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
 
       shipTypeChanged = true;
+      sShipTypeChange.end({ newShipId, success: true });
     }
 
     // Apply ship resource updates if provided
@@ -280,18 +301,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     if (Object.keys(shipUpdates).length > 0) {
+      const sShipUpdate = trace.span("update_ship_resources", { fields: Object.keys(shipUpdates) });
       const { error: updateError } = await supabase
         .from("ship_instances")
         .update(shipUpdates)
         .eq("ship_id", newShipId);
 
       if (updateError) {
+        sShipUpdate.end({ error: updateError.message });
         console.error("character_modify.ship_update", updateError);
         throw new CharacterModifyError("Failed to update ship resources", 500);
       }
+      sShipUpdate.end({ success: true });
     }
 
     // Fetch updated data for response
+    const sFetchUpdated = trace.span("fetch_updated_data");
     const { data: updatedChar, error: fetchCharError } = await supabase
       .from("characters")
       .select("character_id, name, current_ship_id")
@@ -305,12 +330,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .single();
 
     if (fetchCharError || fetchShipError || !updatedChar || !updatedShip) {
+      sFetchUpdated.end({ error: "fetch_failed" });
       console.error("character_modify.fetch_updated", {
         fetchCharError,
         fetchShipError,
       });
       throw new CharacterModifyError("Failed to fetch updated data", 500);
     }
+    sFetchUpdated.end({ success: true });
 
     const updatedShipRow = updatedShip as ShipRow;
 
@@ -365,4 +392,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));

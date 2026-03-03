@@ -15,8 +15,9 @@ import {
   respondWithError,
 } from "../_shared/request.ts";
 import { computeCorpMemberRecipients } from "../_shared/visibility.ts";
+import { traced } from "../_shared/weave.ts";
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("task_cancel", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -44,6 +45,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const characterId = requireString(payload, "character_id");
     const taskId = requireString(payload, "task_id");
 
+    const sQueryTask = trace.span("query_task");
     let query = supabase
       .from("events")
       .select("id, character_id, actor_character_id, task_id, task_id_prefix")
@@ -60,6 +62,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const { data: taskStartEvents, error: queryError } = await query.limit(
       isShortId ? 2 : 1,
     );
+    sQueryTask.end();
 
     if (queryError) {
       console.error("task_cancel.query_error", queryError);
@@ -87,6 +90,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     // Determine if this is a corp ship task by checking ship_instances.
+    const sAuthCheck = trace.span("authorization_check");
     let taskCorpId: string | null = null;
     const { data: shipData, error: shipError } = await supabase
       .from("ship_instances")
@@ -95,6 +99,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .maybeSingle();
 
     if (shipError) {
+      sAuthCheck.end();
       console.error("task_cancel.ship_lookup_error", shipError);
       return errorResponse("Failed to validate task ownership", 500);
     }
@@ -128,11 +133,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (
       !(isRequesterOwner || isRequesterActor || (isCorpShipTask && isSameCorp))
     ) {
+      sAuthCheck.end();
       return errorResponse(
         "You do not have permission to cancel this task",
         403,
       );
     }
+    sAuthCheck.end();
 
     let additionalRecipients: { characterId: string; reason: string }[] = [];
     if (taskCorpId) {
@@ -143,6 +150,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       );
     }
 
+    const sEmit = trace.span("emit_event");
     await emitCharacterEvent({
       supabase,
       characterId: taskOwnerCharacterId,
@@ -161,6 +169,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       corpId: taskCorpId ?? undefined,
       additionalRecipients,
     });
+    sEmit.end();
 
     return successResponse({
       request_id: requestId,
@@ -176,4 +185,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
       500,
     );
   }
-});
+}));

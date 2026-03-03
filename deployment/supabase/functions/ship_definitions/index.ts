@@ -18,8 +18,9 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("ship_definitions", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -46,6 +47,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     typeof payload.character_id === "string" ? payload.character_id : null;
 
   try {
+    const sQuery = trace.span("db_query_ship_definitions");
     const { data, error } = await supabase
       .from("ship_definitions")
       .select(
@@ -54,13 +56,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .order("purchase_price", { ascending: true });
 
     if (error) {
+      sQuery.end({ error: error.message });
       console.error("ship_definitions.query", error);
       return errorResponse("Failed to load ship definitions", 500);
     }
 
     const definitions = data ?? [];
+    sQuery.end({ count: definitions.length });
 
     if (characterId) {
+      const sEmit = trace.span("emit_ship_definitions_event");
       const source = buildEventSource("ship_definitions", requestId);
       await emitCharacterEvent({
         supabase,
@@ -69,6 +74,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         payload: { source, definitions },
         requestId,
       });
+      sEmit.end();
     }
 
     return successResponse({ definitions });
@@ -76,4 +82,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("ship_definitions.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));

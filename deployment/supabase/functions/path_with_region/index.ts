@@ -33,6 +33,7 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 class PathWithRegionError extends Error {
   status: number;
@@ -48,7 +49,7 @@ const DEFAULT_REGION_HOPS = 1;
 const DEFAULT_MAX_SECTORS = 200;
 const MAX_ALLOWED_SECTORS = 400;
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("path_with_region", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -79,9 +80,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "path_with_region");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: "rate_limited" });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -97,7 +101,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    return await handlePathWithRegion(
+    const sHandlePath = trace.span("handle_path_with_region");
+    const result = await handlePathWithRegion(
       supabase,
       payload,
       characterId,
@@ -106,6 +111,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     );
+    sHandlePath.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -143,7 +150,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handlePathWithRegion(
   supabase: ReturnType<typeof createServiceRoleClient>,

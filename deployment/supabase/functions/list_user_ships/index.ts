@@ -23,6 +23,7 @@ import {
 } from "../_shared/request.ts";
 import type { ShipDefinitionRow } from "../_shared/status.ts";
 import { fetchActiveTaskIdsByShip } from "../_shared/tasks.ts";
+import { traced } from "../_shared/weave.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -53,7 +54,7 @@ interface ShipsListResult {
   ships: ShipSummary[];
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("list_user_ships", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -81,9 +82,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // character_id is the user's personal character
     const characterId = requireString(payload, "character_id");
 
+    const sFetch = trace.span("fetch_user_ships");
     const result = await fetchUserShips(supabase, characterId);
+    sFetch.end({ ship_count: result.ships.length });
 
     // Emit event with results so client receives them via WebSocket
+    const sEmit = trace.span("emit_ships_list_event");
     const source = buildEventSource("list_user_ships", requestId);
     await emitCharacterEvent({
       supabase,
@@ -92,6 +96,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       payload: { source, ...result },
       requestId,
     });
+    sEmit.end();
 
     return successResponse({ request_id: requestId });
   } catch (err) {
@@ -102,7 +107,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("list_user_ships.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function fetchUserShips(
   supabase: SupabaseClient,

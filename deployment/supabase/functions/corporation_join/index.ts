@@ -24,6 +24,7 @@ import {
   upsertCorporationMembership,
 } from "../_shared/corporations.ts";
 import { canonicalizeCharacterId } from "../_shared/ids.ts";
+import { traced } from "../_shared/weave.ts";
 
 class CorporationJoinError extends Error {
   status: number;
@@ -35,7 +36,7 @@ class CorporationJoinError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("corporation_join", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -74,9 +75,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const taskId = optionalString(payload, "task_id");
   ensureActorMatches(actorCharacterId, characterId);
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "corporation_join");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -92,6 +96,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const sHandleJoin = trace.span("handle_join", { characterId, corpId });
     const result = await handleJoin({
       supabase,
       characterId,
@@ -101,6 +106,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       requestId,
       taskId,
     });
+    sHandleJoin.end(result);
     return successResponse({ ...result, request_id: requestId });
   } catch (err) {
     if (err instanceof CorporationJoinError) {
@@ -109,7 +115,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("corporation_join.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleJoin(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

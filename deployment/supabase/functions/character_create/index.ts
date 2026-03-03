@@ -24,6 +24,7 @@ import {
   loadUniverseMeta,
   pickRandomFedspaceSector,
 } from "../_shared/fedspace.ts";
+import { traced } from "../_shared/weave.ts";
 
 const DEFAULT_START_SECTOR = 0;
 const DEFAULT_SHIP_TYPE = "sparrow_scout";
@@ -67,13 +68,16 @@ class CharacterCreateError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("character_create", async (req, trace) => {
   const supabase = createServiceRoleClient();
   let payload;
 
+  const sParse = trace.span("parse_request");
   try {
     payload = await parseJsonRequest(req);
+    sParse.end();
   } catch (err) {
+    sParse.end({ error: err instanceof Error ? err.message : String(err) });
     const response = respondWithError(err);
     if (response) {
       return response;
@@ -83,9 +87,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // Validate admin password
+  const sAdminAuth = trace.span("admin_auth");
   const adminPassword = optionalString(payload, "admin_password");
   const isValid = await validateAdminSecret(adminPassword);
   if (!isValid) {
+    sAdminAuth.end({ error: "Invalid admin password" });
     await logAdminAction(supabase, {
       action: "character_create",
       payload,
@@ -94,9 +100,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("Invalid admin password", 403);
   }
+  sAdminAuth.end();
 
   try {
     // Parse and validate request
+    const sValidate = trace.span("validate_input");
     const name = requireString(payload, "name");
     const playerData =
       (payload.player as CharacterCreatePayload["player"]) ?? {};
@@ -116,12 +124,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const cargoQf = cargo.quantum_foam ?? 0;
     const cargoRo = cargo.retro_organics ?? 0;
     const cargoNs = cargo.neuro_symbolics ?? 0;
+    sValidate.end({ name, shipType });
 
     // Validate ship type exists
+    const sShipDef = trace.span("load_ship_definition");
     const shipDefinition = await loadShipDefinition(supabase, shipType);
     if (!shipDefinition) {
+      sShipDef.end({ error: `Invalid ship type: ${shipType}` });
       throw new CharacterCreateError(`Invalid ship type: ${shipType}`, 400);
     }
+    sShipDef.end({ ship_type: shipType });
 
     // Use ship definition defaults if not provided
     const currentWarpPower =
@@ -131,6 +143,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       shipData.current_fighters ?? shipDefinition.fighters;
 
     // Check name uniqueness
+    const sNameCheck = trace.span("check_name_uniqueness");
     const existingCharacter = await supabase
       .from("characters")
       .select("character_id")
@@ -138,24 +151,29 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .maybeSingle();
 
     if (existingCharacter.error) {
+      sNameCheck.end({ error: existingCharacter.error.message });
       console.error("character_create.name_check", existingCharacter.error);
       throw new CharacterCreateError("Failed to check character name", 500);
     }
 
     if (existingCharacter.data) {
+      sNameCheck.end({ error: "Name exists" });
       throw new CharacterCreateError(
         `Character name "${name}" already exists`,
         409,
       );
     }
+    sNameCheck.end();
 
     if (shipName) {
+      const sShipNameCheck = trace.span("check_ship_name_uniqueness");
       const existingShipName = await supabase
         .from("ship_instances")
         .select("ship_id")
         .eq("ship_name", shipName)
         .maybeSingle();
       if (existingShipName.error) {
+        sShipNameCheck.end({ error: existingShipName.error.message });
         console.error(
           "character_create.ship_name_check",
           existingShipName.error,
@@ -163,14 +181,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
         throw new CharacterCreateError("Failed to check ship name", 500);
       }
       if (existingShipName.data) {
+        sShipNameCheck.end({ error: "Ship name exists" });
         throw new CharacterCreateError(
           `Ship name "${shipName}" already exists`,
           409,
         );
       }
+      sShipNameCheck.end();
     }
 
     // Create character (without ship reference first)
+    const sCreateChar = trace.span("create_character");
     const { data: character, error: characterError } = await supabase
       .from("characters")
       .insert({
@@ -186,9 +207,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .single();
 
     if (characterError || !character) {
+      sCreateChar.end({ error: characterError?.message ?? "No data" });
       console.error("character_create.character_insert", characterError);
       throw new CharacterCreateError("Failed to create character", 500);
     }
+    sCreateChar.end({ character_id: character.character_id });
 
     const characterId = character.character_id;
 
@@ -199,6 +222,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     );
 
     // Create ship for character
+    const sCreateShip = trace.span("create_ship");
     const { data: ship, error: shipError } = await supabase
       .from("ship_instances")
       .insert({
@@ -220,6 +244,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .single();
 
     if (shipError || !ship) {
+      sCreateShip.end({ error: shipError?.message ?? "No data" });
       console.error("character_create.ship_insert", shipError);
       // Clean up character if ship creation fails
       await supabase
@@ -228,14 +253,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
         .eq("character_id", characterId);
       throw new CharacterCreateError("Failed to create ship", 500);
     }
+    sCreateShip.end({ ship_id: ship.ship_id });
 
     // Update character with ship reference
+    const sLinkShip = trace.span("link_ship_to_character");
     const { error: updateError } = await supabase
       .from("characters")
       .update({ current_ship_id: ship.ship_id })
       .eq("character_id", characterId);
 
     if (updateError) {
+      sLinkShip.end({ error: updateError.message });
       console.error("character_create.character_update", updateError);
       // Clean up on failure
       await supabase
@@ -248,8 +276,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         .eq("character_id", characterId);
       throw new CharacterCreateError("Failed to link ship to character", 500);
     }
+    sLinkShip.end();
 
     // Assign quests marked as assign_on_creation (e.g. tutorial)
+    const sQuests = trace.span("assign_quests");
     const { data: autoQuests } = await supabase
       .from("quest_definitions")
       .select("code")
@@ -264,8 +294,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         });
       }
     }
+    sQuests.end({ count: autoQuests?.length ?? 0 });
 
     // Log successful creation
+    const sAuditLog = trace.span("audit_log");
     await logAdminAction(supabase, {
       action: "character_create",
       admin_user: "admin",
@@ -273,6 +305,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       payload,
       result: "success",
     });
+    sAuditLog.end();
 
     // Return success response
     return successResponse({
@@ -325,7 +358,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function loadShipDefinition(
   supabase: ReturnType<typeof createServiceRoleClient>,

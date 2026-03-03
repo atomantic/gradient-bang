@@ -45,18 +45,25 @@ import {
 import { canonicalizeCharacterId } from "../_shared/ids.ts";
 import { ActorAuthorizationError } from "../_shared/actors.ts";
 import { normalizeMapKnowledge } from "../_shared/map.ts";
+import { traced } from "../_shared/weave.ts";
 
 const DEFAULT_START_SECTOR = 0;
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("join", async (req, trace) => {
+  const sAuth = trace.span("auth_check");
   if (!validateApiToken(req)) {
+    sAuth.end({ error: "unauthorized" });
     return unauthorizedResponse();
   }
+  sAuth.end();
 
   let payload;
+  const sParse = trace.span("parse_request");
   try {
     payload = await parseJsonRequest(req);
+    sParse.end();
   } catch (err) {
+    sParse.end({ error: err instanceof Error ? err.message : String(err) });
     const response = respondWithError(err);
     if (response) {
       return response;
@@ -98,19 +105,25 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const t0 = performance.now();
 
     // Load character using PG
+    const sLoadChar = trace.span("load_character", { characterId });
     const character = await pgLoadCharacterForJoin(pg, characterId);
     if (!character) {
+      sLoadChar.end({ error: "not found" });
       throw new JoinError("Character is not registered", 404);
     }
+    sLoadChar.end({ name: character.name });
     console.log(
       `[join] pgLoadCharacter: ${(performance.now() - t0).toFixed(1)}ms`,
     );
 
     // Rate limiting
+    const sRateLimit = trace.span("rate_limit");
     const t1 = performance.now();
     try {
       await pgEnforceRateLimit(pg, characterId, "join");
+      sRateLimit.end();
     } catch (err) {
+      sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
       if (err instanceof RateLimitError) {
         return errorResponse("Too many join requests", 429);
       }
@@ -126,11 +139,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     // Load ship using PG
+    const sLoadShip = trace.span("load_ship");
     const t2 = performance.now();
     const ship = await pgLoadShip(pg, character.current_ship_id);
+    sLoadShip.end({ ship_id: ship.ship_id });
     console.log(`[join] pgLoadShip: ${(performance.now() - t2).toFixed(1)}ms`);
 
     // Actor authorization using PG
+    const sActorAuth = trace.span("actor_authorization");
     const t3 = performance.now();
     await pgEnsureActorAuthorization(pg, {
       ship,
@@ -138,13 +154,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       targetCharacterId: characterId,
     });
+    sActorAuth.end();
     console.log(
       `[join] pgEnsureActorAuthorization: ${(performance.now() - t3).toFixed(1)}ms`,
     );
 
     // Load ship definition using PG
+    const sShipDef = trace.span("load_ship_definition");
     const t4 = performance.now();
     const shipDefinition = await pgLoadShipDefinition(pg, ship.ship_type);
+    sShipDef.end({ ship_type: ship.ship_type });
     console.log(
       `[join] pgLoadShipDefinition: ${(performance.now() - t4).toFixed(1)}ms`,
     );
@@ -152,22 +171,26 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const previousSector = ship.current_sector;
 
     // Resolve target sector using PG
+    const sResolveSector = trace.span("resolve_target_sector");
     const t5 = performance.now();
     const targetSector = await pgResolveTargetSector(pg, {
       sectorOverride,
       fallbackSector: ship.current_sector ?? DEFAULT_START_SECTOR,
     });
+    sResolveSector.end({ targetSector });
     console.log(
       `[join] pgResolveTargetSector: ${(performance.now() - t5).toFixed(1)}ms`,
     );
 
     // Update ship state using PG
+    const sUpdateShip = trace.span("update_ship_state");
     const t6 = performance.now();
     await pgUpdateShipState(pg, {
       shipId: ship.ship_id,
       sectorId: targetSector,
       creditsOverride,
     });
+    sUpdateShip.end();
     console.log(
       `[join] pgUpdateShipState: ${(performance.now() - t6).toFixed(1)}ms`,
     );
@@ -176,13 +199,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
     ship.current_sector = targetSector;
 
     // Ensure character-ship link using PG
+    const sCharShipLink = trace.span("ensure_character_ship_link");
     const t7 = performance.now();
     await pgEnsureCharacterShipLink(pg, character.character_id, ship.ship_id);
+    sCharShipLink.end();
     console.log(
       `[join] pgEnsureCharacterShipLink: ${(performance.now() - t7).toFixed(1)}ms`,
     );
 
     // Update map knowledge using PG
+    const sMapKnowledge = trace.span("upsert_knowledge_entry");
     const t8 = performance.now();
     const knowledge = normalizeMapKnowledge(character.map_knowledge);
     await pgUpsertKnowledgeEntry(pg, {
@@ -190,6 +216,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       sectorId: targetSector,
       existingKnowledge: knowledge,
     });
+    sMapKnowledge.end();
     console.log(
       `[join] pgUpsertKnowledgeEntry: ${(performance.now() - t8).toFixed(1)}ms`,
     );
@@ -197,6 +224,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const source = buildEventSource("join", requestId);
 
     // Emit status.snapshot FIRST using PG
+    const sStatusSnapshot = trace.span("emit_status_snapshot");
     const t9 = performance.now();
     console.log(`[join] Emitting status.snapshot for ${characterId}`);
     const statusPayload = await pgBuildStatusPayload(pg, characterId, {
@@ -215,11 +243,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
       requestId,
       corpId: character.corporation_id,
     });
+    sStatusSnapshot.end();
     console.log(
       `[join] status.snapshot emitted: ${(performance.now() - t9).toFixed(1)}ms`,
     );
 
     // Emit map.local SECOND using PG
+    const sMapLocal = trace.span("emit_map_local");
     const t10 = performance.now();
     console.log(`[join] Emitting map.local for ${characterId}`);
     const mapPayload = await pgBuildLocalMapRegion(pg, {
@@ -238,6 +268,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       requestId,
       corpId: character.corporation_id,
     });
+    sMapLocal.end();
     console.log(
       `[join] map.local emitted: ${(performance.now() - t10).toFixed(1)}ms`,
     );
@@ -257,6 +288,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     // Movement observers using PG
     if (previousSector !== null && previousSector !== targetSector) {
+      const sMovementObservers = trace.span("emit_movement_observers");
       const t11 = performance.now();
       await pgEmitMovementObservers({
         pg,
@@ -285,6 +317,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         extraPayload: { to_sector: targetSector },
         corpIds, // Corp visibility for arrivals
       });
+      sMovementObservers.end();
       console.log(
         `[join] movement observers: ${(performance.now() - t11).toFixed(1)}ms`,
       );
@@ -292,6 +325,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     // Auto-join existing combat (if any) in the target sector
     // Combat operations still use REST (Supabase client)
+    const sAutoJoinCombat = trace.span("auto_join_combat");
     const t12 = performance.now();
     console.log("[join] Checking for existing combat to join");
     let activeEncounter = await autoJoinExistingCombat({
@@ -300,12 +334,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
       sectorId: targetSector,
       requestId,
     });
+    sAutoJoinCombat.end({ joined: !!activeEncounter });
     console.log(
       `[join] autoJoinExistingCombat: ${(performance.now() - t12).toFixed(1)}ms`,
     );
 
     // Check for garrison auto-engage (offensive/toll garrisons trigger combat on join)
     // This may CREATE a new combat encounter
+    const sGarrison = trace.span("check_garrison_auto_engage");
     const t13 = performance.now();
     console.log("[join] Checking for garrison auto-engage");
     const { checkGarrisonAutoEngage } =
@@ -316,6 +352,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       sectorId: targetSector,
       requestId,
     });
+    sGarrison.end();
     console.log(
       `[join] checkGarrisonAutoEngage: ${(performance.now() - t13).toFixed(1)}ms`,
     );
@@ -332,6 +369,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       !activeEncounter.ended &&
       activeEncounter.participants[characterId]
     ) {
+      const sCombatEvent = trace.span("emit_combat_round_waiting");
       const t14 = performance.now();
       console.log(
         `[join] Emitting combat.round_waiting for ${characterId} in combat ${activeEncounter.combat_id}`,
@@ -351,6 +389,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         actorCharacterId: characterId,
         corpId: character.corporation_id,
       });
+      sCombatEvent.end();
       console.log(
         `[join] combat.round_waiting emitted: ${(performance.now() - t14).toFixed(1)}ms`,
       );
@@ -379,7 +418,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // Ignore close errors
     }
   }
-});
+}));
 
 /**
  * Check if character should auto-join existing combat in sector.

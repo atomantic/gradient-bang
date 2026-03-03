@@ -30,8 +30,9 @@ import {
 } from "../_shared/actors.ts";
 import { buildSectorSnapshot } from "../_shared/map.ts";
 import { loadUniverseMeta, isFedspaceSector } from "../_shared/fedspace.ts";
+import { traced } from "../_shared/weave.ts";
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("combat_set_garrison_mode", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -68,9 +69,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return errorResponse("sector is required", 400);
   }
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "combat_set_garrison_mode");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: String(err) });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -86,7 +90,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    return await handleCombatSetGarrisonMode({
+    const sHandle = trace.span("handle_set_garrison_mode", { character_id: characterId, sector });
+    const result = await handleCombatSetGarrisonMode({
       supabase,
       requestId,
       characterId,
@@ -96,6 +101,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       actorCharacterId,
       adminOverride,
     });
+    sHandle.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -123,7 +130,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse(detail, status);
   }
-});
+}));
 
 async function handleCombatSetGarrisonMode(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

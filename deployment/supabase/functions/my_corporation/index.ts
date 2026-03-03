@@ -23,6 +23,7 @@ import {
   fetchDestroyedCorporationShips,
   loadCorporationById,
 } from "../_shared/corporations.ts";
+import { traced } from "../_shared/weave.ts";
 
 class MyCorporationError extends Error {
   status: number;
@@ -34,7 +35,7 @@ class MyCorporationError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("my_corporation", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -62,9 +63,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const requestId = resolveRequestId(payload);
   const characterId = requireString(payload, "character_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "my_corporation");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       return errorResponse("Too many corporation requests", 429);
     }
@@ -73,9 +77,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const sLoadCorp = trace.span("load_my_corporation", { characterId });
     const result = await loadMyCorporation({ supabase, characterId });
+    sLoadCorp.end(result);
 
     // Emit corporation.data event so the client receives the data via WebSocket
+    const sEmitEvent = trace.span("emit_event", { eventType: "corporation.data" });
     const source = buildEventSource("my_corporation", requestId);
     await emitCharacterEvent({
       supabase,
@@ -84,6 +91,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       payload: { source, ...result },
       requestId,
     });
+    sEmitEvent.end();
 
     return successResponse({ ...result, request_id: requestId });
   } catch (err) {
@@ -93,7 +101,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("my_corporation.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function loadMyCorporation(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

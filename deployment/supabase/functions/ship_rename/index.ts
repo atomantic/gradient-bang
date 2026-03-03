@@ -43,6 +43,7 @@ import {
   loadCharacter,
   loadShip,
 } from "../_shared/status.ts";
+import { traced } from "../_shared/weave.ts";
 
 class ShipRenameError extends Error {
   status: number;
@@ -56,7 +57,7 @@ class ShipRenameError extends Error {
 
 type JsonRecord = Record<string, unknown>;
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("ship_rename", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -93,9 +94,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const taskId = optionalString(payload, "task_id");
 
     const rateLimitId = actorCharacterId ?? characterId;
+    const sRateLimit = trace.span("rate_limit");
     try {
       await enforceRateLimit(supabase, rateLimitId, "ship_rename");
+      sRateLimit.end();
     } catch (err) {
+      sRateLimit.end({ error: "rate_limited" });
       if (err instanceof RateLimitError) {
         await emitErrorEvent(supabase, {
           characterId,
@@ -110,6 +114,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return errorResponse("rate limit error", 500);
     }
 
+    const sRename = trace.span("handle_rename");
     const renamed = await handleRename({
       supabase,
       characterId,
@@ -120,6 +125,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       requestId,
       taskId,
     });
+    sRename.end({ changed: renamed.changed });
 
     return successResponse({ request_id: requestId, ...renamed });
   } catch (err) {
@@ -167,7 +173,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("ship_rename.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleRename(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

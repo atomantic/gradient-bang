@@ -23,6 +23,7 @@ import {
   fetchDestroyedCorporationShips,
   loadCorporationById,
 } from "../_shared/corporations.ts";
+import { traced } from "../_shared/weave.ts";
 
 class CorporationInfoError extends Error {
   status: number;
@@ -34,7 +35,7 @@ class CorporationInfoError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("corporation_info", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -63,9 +64,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const characterId = requireString(payload, "character_id");
   const corpId = requireString(payload, "corp_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "corporation_info");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       return errorResponse("Too many corporation requests", 429);
     }
@@ -74,7 +78,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const sHandleInfo = trace.span("handle_info", { characterId, corpId });
     const result = await handleInfo({ supabase, characterId, corpId });
+    sHandleInfo.end(result);
     return successResponse({ ...result, request_id: requestId });
   } catch (err) {
     if (err instanceof CorporationInfoError) {
@@ -83,7 +89,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("corporation_info.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleInfo(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

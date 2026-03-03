@@ -34,12 +34,13 @@ import {
 } from "../_shared/actors.ts";
 import { createPgClient, connectWithCleanup } from "../_shared/pg.ts";
 import { pgFinishHyperspace, pgMarkSectorVisited } from "../_shared/pg_queries.ts";
+import { traced } from "../_shared/weave.ts";
 
 const HYPERSPACE_ERROR =
   "Character is in hyperspace, status unavailable until arrival";
 const STUCK_THRESHOLD_MS = 20_000; // 20 seconds past ETA = stuck
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("my_status", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -87,9 +88,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "my_status");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: String(err) });
     if (err instanceof RateLimitError) {
       return errorResponse("Too many my_status requests", 429);
     }
@@ -98,8 +102,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const sLoadState = trace.span("load_state", { character_id: characterId });
     const character = await loadCharacter(supabase, characterId);
     const ship = await loadShip(supabase, character.current_ship_id);
+    sLoadState.end();
 
     await ensureActorAuthorization({
       supabase,
@@ -126,6 +132,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
           seconds_overdue: Math.round((now - eta) / 1000),
         });
 
+        const sRecovery = trace.span("hyperspace_recovery");
         const pgClient = createPgClient();
         try {
           await connectWithCleanup(pgClient);
@@ -148,7 +155,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
           ship.current_sector = ship.hyperspace_destination;
           ship.hyperspace_destination = null;
           ship.hyperspace_eta = null;
+          sRecovery.end();
         } catch (recoveryErr) {
+          sRecovery.end({ error: String(recoveryErr) });
           console.error("my_status.hyperspace_recovery_failed", recoveryErr);
           await emitErrorEvent(supabase, {
             characterId,
@@ -175,9 +184,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     const source = buildEventSource("my_status", requestId);
+    const sBuildStatus = trace.span("build_status_payload");
     const statusPayload = await buildStatusPayload(supabase, characterId);
     statusPayload["source"] = source;
+    sBuildStatus.end();
 
+    const sEmitEvent = trace.span("emit_status_snapshot");
     await emitCharacterEvent({
       supabase,
       characterId,
@@ -189,6 +201,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       taskId,
       scope: "direct",
     });
+    sEmitEvent.end();
 
     return successResponse({ request_id: requestId });
   } catch (err) {
@@ -201,7 +214,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("my_status.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 function isNotFoundError(err: unknown): boolean {
   if (!(err instanceof Error)) {

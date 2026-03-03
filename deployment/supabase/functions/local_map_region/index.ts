@@ -33,11 +33,12 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 const DEFAULT_MAX_HOPS = 3;
 const DEFAULT_MAX_SECTORS = 100;
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("local_map_region", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -68,9 +69,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "local_map_region");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: "rate_limited" });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -86,7 +90,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    return await handleLocalMapRegion(
+    const sHandleMap = trace.span("handle_local_map_region");
+    const result = await handleLocalMapRegion(
       supabase,
       payload,
       characterId,
@@ -95,6 +100,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     );
+    sHandleMap.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -126,7 +133,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 class LocalMapRegionError extends Error {
   status: number;

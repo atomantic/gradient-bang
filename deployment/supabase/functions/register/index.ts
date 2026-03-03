@@ -22,6 +22,7 @@ import {
   requireString,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 // CORS headers for public access from web clients
 const corsHeaders = {
@@ -42,7 +43,7 @@ function corsResponse(body: unknown, status = 200): Response {
   });
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("register", async (req, trace) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -51,9 +52,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const serviceClient = createServiceRoleClient();
 
   // Apply IP-based rate limiting
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforcePublicRateLimit(serviceClient, req, "register");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       console.warn("register.rate_limit", err.message);
       return corsResponse(
@@ -72,9 +76,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   let payload;
+  const sParse = trace.span("parse_request");
   try {
     payload = await parseJsonRequest(req);
+    sParse.end();
   } catch (err) {
+    sParse.end({ error: err instanceof Error ? err.message : String(err) });
     const response = respondWithError(err);
     if (response) {
       return corsResponse(await response.json(), response.status);
@@ -85,11 +92,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   try {
     // Parse and validate request
+    const sValidate = trace.span("validate_input");
     const email = requireString(payload, "email");
     const password = requireString(payload, "password");
 
     // Basic email validation
     if (!email.includes("@") || email.length < 3) {
+      sValidate.end({ error: "Invalid email address" });
       return corsResponse(
         { success: false, error: "Invalid email address" },
         400,
@@ -98,32 +107,38 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     // Password validation
     if (password.length < 6) {
+      sValidate.end({ error: "Password too short" });
       return corsResponse(
         { success: false, error: "Password must be at least 6 characters" },
         400,
       );
     }
+    sValidate.end();
 
     // Create Supabase auth client (public)
     const publicClient = createPublicClient();
 
     // Sign up user with Supabase Auth
+    const sSignup = trace.span("auth_signup");
     const { data, error } = await publicClient.auth.signUp({
       email,
       password,
     });
 
     if (error) {
+      sSignup.end({ error: error.message });
       console.error("register.signup", error);
       return corsResponse({ success: false, error: error.message }, 400);
     }
 
     if (!data.user) {
+      sSignup.end({ error: "Failed to create user account" });
       return corsResponse(
         { success: false, error: "Failed to create user account" },
         500,
       );
     }
+    sSignup.end({ user_id: data.user.id });
 
     // Check if email confirmation is required
     const confirmationRequired = !data.user.email_confirmed_at;
@@ -150,4 +165,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
       500,
     );
   }
-});
+}));

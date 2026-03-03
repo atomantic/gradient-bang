@@ -38,6 +38,7 @@ import {
   isMegaPortSector,
   type UniverseMeta,
 } from "../_shared/fedspace.ts";
+import { traced } from "../_shared/weave.ts";
 
 class ShipSellError extends Error {
   status: number;
@@ -49,7 +50,7 @@ class ShipSellError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("ship_sell", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -84,9 +85,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const shipIdRaw = requireString(payload, "ship_id");
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "ship_sell");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: "rate_limited" });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -102,13 +106,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    return await handleShipSell(
+    const sHandleSell = trace.span("handle_ship_sell");
+    const result = await handleShipSell(
       supabase,
       characterId,
       shipIdRaw,
       requestId,
       taskId,
     );
+    sHandleSell.end();
+    return result;
   } catch (err) {
     if (err instanceof ShipSellError) {
       await emitErrorEvent(supabase, {
@@ -132,7 +139,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse(detail, 500);
   }
-});
+}));
 
 async function handleShipSell(
   supabase: ReturnType<typeof createServiceRoleClient>,

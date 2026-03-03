@@ -18,6 +18,7 @@ import {
   RateLimitError,
 } from "../_shared/rate_limiting.ts";
 import { parseJsonRequest, respondWithError } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 // CORS headers for public access from web clients
 const corsHeaders = {
@@ -38,7 +39,7 @@ function corsResponse(body: unknown, status = 200): Response {
   });
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("user_character_list", async (req, trace) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -47,10 +48,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const supabase = createServiceRoleClient();
 
   // Authenticate user from JWT
+  const sAuth = trace.span("auth_check");
   let user;
   try {
     user = await getAuthenticatedUser(req);
+    sAuth.end({ user_id: user.id });
   } catch (err) {
+    sAuth.end({ error: err instanceof Error ? err.message : String(err) });
     console.error("character_list.auth", err);
     return corsResponse(
       {
@@ -62,9 +66,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // Apply rate limiting (per user)
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforcePublicRateLimit(supabase, req, "character_list");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       console.warn("character_list.rate_limit", err.message);
       return corsResponse(
@@ -77,6 +84,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   try {
     // Query user's characters via junction table with basic ship info
+    const sQuery = trace.span("query_characters");
     const { data: userCharacters, error: charactersError } = await supabase
       .from("user_characters")
       .select(
@@ -110,12 +118,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .order("created_at", { ascending: false });
 
     if (charactersError) {
+      sQuery.end({ error: charactersError.message });
       console.error("character_list.query", charactersError);
       return corsResponse(
         { success: false, error: "Failed to load characters" },
         500,
       );
     }
+    sQuery.end({ count: (userCharacters || []).length });
 
     // Transform data for cleaner response
     const formattedCharacters = (userCharacters || []).map((uc: any) => {
@@ -167,4 +177,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
       500,
     );
   }
-});
+}));

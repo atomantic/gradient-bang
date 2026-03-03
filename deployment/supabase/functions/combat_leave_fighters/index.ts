@@ -58,8 +58,9 @@ import { computeNextCombatDeadline } from "../_shared/combat_resolution.ts";
 import { computeEventRecipients } from "../_shared/visibility.ts";
 import { loadUniverseMeta, isFedspaceSector } from "../_shared/fedspace.ts";
 import { runLeaveFightersTransaction } from "../_shared/garrison_transactions.ts";
+import { traced } from "../_shared/weave.ts";
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("combat_leave_fighters", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -105,12 +106,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const pg = createPgClient();
 
   try {
+    const sPgConnect = trace.span("pg_connect");
     await connectWithCleanup(pg);
+    sPgConnect.end();
 
     // Rate limiting via PG
+    const sRateLimit = trace.span("rate_limit");
     try {
       await pgEnforceRateLimit(pg, characterId, "combat_leave_fighters");
+      sRateLimit.end();
     } catch (err) {
+      sRateLimit.end({ error: String(err) });
       if (err instanceof RateLimitError) {
         await emitErrorEvent(supabase, {
           characterId,
@@ -125,7 +131,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return errorResponse("rate limit error", 500);
     }
 
-    return await handleCombatLeaveFighters({
+    const sHandle = trace.span("handle_leave_fighters", { character_id: characterId, sector });
+    const result = await handleCombatLeaveFighters({
       pg,
       supabase,
       requestId,
@@ -138,6 +145,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     });
+    sHandle.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -169,7 +178,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // Ignore cleanup errors
     }
   }
-});
+}));
 
 async function handleCombatLeaveFighters(params: {
   pg: Awaited<ReturnType<typeof createPgClient>>;

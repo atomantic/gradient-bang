@@ -33,6 +33,7 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 class PlotCourseError extends Error {
   status: number;
@@ -44,7 +45,7 @@ class PlotCourseError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("plot_course", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -75,9 +76,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "plot_course");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: "rate_limited" });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -93,7 +97,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    return await handlePlotCourse(
+    const sHandlePlotCourse = trace.span("handle_plot_course");
+    const result = await handlePlotCourse(
       supabase,
       payload,
       characterId,
@@ -102,6 +107,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       actorCharacterId,
       taskId,
     );
+    sHandlePlotCourse.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -136,7 +143,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handlePlotCourse(
   supabase: ReturnType<typeof createServiceRoleClient>,

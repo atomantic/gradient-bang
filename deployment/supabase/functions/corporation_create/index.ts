@@ -29,6 +29,7 @@ import {
   generateInviteCode,
   upsertCorporationMembership,
 } from "../_shared/corporations.ts";
+import { traced } from "../_shared/weave.ts";
 
 const CORPORATION_CREATION_COST = 10_000;
 
@@ -42,7 +43,7 @@ class CorporationCreateError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("corporation_create", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -79,9 +80,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return errorResponse("Name must be 3-50 characters", 400);
   }
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "corporation_create");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -97,6 +101,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const sHandleCreate = trace.span("handle_create", { characterId, normalizedName });
     const result = await handleCreate({
       supabase,
       characterId,
@@ -104,6 +109,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       requestId,
       taskId,
     });
+    sHandleCreate.end(result);
     return successResponse({ ...result, request_id: requestId });
   } catch (err) {
     if (err instanceof CorporationCreateError) {
@@ -112,7 +118,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("corporation_create.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleCreate(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

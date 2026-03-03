@@ -45,6 +45,7 @@ import {
   isMegaPortSector,
   type UniverseMeta,
 } from "../_shared/fedspace.ts";
+import { traced } from "../_shared/weave.ts";
 
 class ShipPurchaseError extends Error {
   status: number;
@@ -59,7 +60,7 @@ class ShipPurchaseError extends Error {
 const PERSONAL_PURCHASE = "personal";
 const CORPORATION_PURCHASE = "corporation";
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("ship_purchase", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -114,9 +115,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return errorResponse("purchase_type must be 'personal'", 400);
   }
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "ship_purchase");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: "rate_limited" });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -133,7 +137,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   try {
     if (purchaseType === CORPORATION_PURCHASE) {
-      return await handleCorporationPurchase(
+      const sCorpPurchase = trace.span("handle_corporation_purchase");
+      const result = await handleCorporationPurchase(
         supabase,
         payload,
         characterId,
@@ -142,8 +147,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
         taskId,
         expectedPrice,
       );
+      sCorpPurchase.end();
+      return result;
     }
-    return await handlePersonalPurchase(
+    const sPersonalPurchase = trace.span("handle_personal_purchase");
+    const result = await handlePersonalPurchase(
       supabase,
       payload,
       characterId,
@@ -152,6 +160,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       taskId,
       expectedPrice,
     );
+    sPersonalPurchase.end();
+    return result;
   } catch (err) {
     if (err instanceof ShipPurchaseError) {
       await emitErrorEvent(supabase, {
@@ -173,7 +183,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handlePersonalPurchase(
   supabase: ReturnType<typeof createServiceRoleClient>,

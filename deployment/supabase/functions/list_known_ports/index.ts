@@ -30,6 +30,7 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 const MAX_HOPS_DEFAULT = 5;
 const MAX_HOPS_LIMIT = 100;
@@ -157,7 +158,7 @@ function getPortPrices(
   return prices;
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("list_known_ports", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -192,9 +193,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "list_known_ports");
   } catch (err) {
+    sRateLimit.end();
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -208,9 +211,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("list_known_ports.rate_limit", err);
     return errorResponse("rate limit error", 500);
   }
+  sRateLimit.end();
 
+  const sHandle = trace.span("handle_list_known_ports");
   try {
-    return await handleListKnownPorts(
+    const result = await handleListKnownPorts(
       supabase,
       payload,
       characterId,
@@ -219,7 +224,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     );
+    sHandle.end();
+    return result;
   } catch (err) {
+    sHandle.end();
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -250,7 +258,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 class ListKnownPortsError extends Error {
   status: number;

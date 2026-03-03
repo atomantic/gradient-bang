@@ -20,8 +20,9 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("quest_assign", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -50,6 +51,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const questCode = requireString(payload, "quest_code");
 
     // Assign the quest via the SQL function
+    const sAssign = trace.span("assign_quest_rpc");
     const { data: playerQuestId, error: rpcError } = await supabase.rpc(
       "assign_quest",
       {
@@ -57,6 +59,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         p_quest_code: questCode,
       },
     );
+    sAssign.end();
 
     if (rpcError) {
       console.error("quest_assign.rpc", rpcError);
@@ -76,6 +79,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const source = buildEventSource("quest_assign", requestId);
 
     // Fetch and emit the full quest status
+    const sLoadStatus = trace.span("load_quest_status");
     const { data: playerQuests, error: pqError } = await supabase
       .from("player_quests")
       .select(
@@ -227,7 +231,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       });
     }
 
+    sLoadStatus.end();
+
     // Emit quest.assigned event (can be used as a quest step trigger)
+    const sEmit = trace.span("emit_events");
     await emitCharacterEvent({
       supabase,
       characterId,
@@ -250,6 +257,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       payload: { source, quests },
       requestId,
     });
+    sEmit.end();
 
     return successResponse({
       request_id: requestId,
@@ -264,4 +272,4 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("quest_assign.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));

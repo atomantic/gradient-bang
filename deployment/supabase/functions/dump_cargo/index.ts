@@ -36,6 +36,7 @@ import {
   respondWithError,
 } from "../_shared/request.ts";
 import { appendSalvageEntry, buildSalvageEntry } from "../_shared/salvage.ts";
+import { traced } from "../_shared/weave.ts";
 
 const VALID_COMMODITIES = new Set([
   "quantum_foam",
@@ -53,7 +54,7 @@ class DumpCargoError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("dump_cargo", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -88,9 +89,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "dump_cargo");
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: "rate_limited" });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -106,7 +110,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    return await handleDumpCargo(
+    const sHandleDump = trace.span("handle_dump_cargo");
+    const result = await handleDumpCargo(
       supabase,
       payload,
       characterId,
@@ -115,6 +120,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     );
+    sHandleDump.end();
+    return result;
   } catch (err) {
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
@@ -146,7 +153,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 function parseManifest(raw: unknown): Record<string, number> {
   if (!raw) {

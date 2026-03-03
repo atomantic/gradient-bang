@@ -21,6 +21,7 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
+import { traced } from "../_shared/weave.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -50,7 +51,7 @@ interface QuestInfo {
   completed_steps: QuestStepInfo[];
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("quest_status", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -76,8 +77,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   try {
     const characterId = requireString(payload, "character_id");
-    const result = await fetchQuestStatus(supabase, characterId);
 
+    const sFetch = trace.span("fetch_quest_status");
+    const result = await fetchQuestStatus(supabase, characterId);
+    sFetch.end();
+
+    const sEmit = trace.span("emit_event");
     const source = buildEventSource("quest_status", requestId);
     await emitCharacterEvent({
       supabase,
@@ -86,6 +91,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       payload: { source, ...result },
       requestId,
     });
+    sEmit.end();
 
     return successResponse({ request_id: requestId });
   } catch (err) {
@@ -96,7 +102,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("quest_status.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function fetchQuestStatus(
   supabase: SupabaseClient,

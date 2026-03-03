@@ -31,8 +31,9 @@ import {
   type ShipNameLookupError,
 } from "../_shared/ship_names.ts";
 import type { EventRecipientSnapshot } from "../_shared/visibility.ts";
+import { traced } from "../_shared/weave.ts";
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("send_message", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -110,18 +111,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return errorResponse("Missing recipient for direct message", 400);
   }
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "send_message");
   } catch (err) {
+    sRateLimit.end();
     if (err instanceof RateLimitError) {
       return errorResponse("Too many requests", 429);
     }
     console.error("send_message.rate_limit", err);
     return errorResponse("rate limit error", 500);
   }
+  sRateLimit.end();
 
+  const sHandle = trace.span("handle_send_message");
   try {
-    return await handleSendMessage({
+    const result = await handleSendMessage({
       supabase,
       requestId,
       characterId,
@@ -135,7 +140,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     });
+    sHandle.end();
+    return result;
   } catch (err) {
+    sHandle.end();
     if (err instanceof ActorAuthorizationError) {
       return errorResponse(err.message, err.status);
     }
@@ -151,7 +159,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         : undefined;
     return errorResponse(detail, status, extra);
   }
-});
+}));
 
 async function handleSendMessage(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

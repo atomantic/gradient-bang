@@ -22,6 +22,7 @@ import {
   generateInviteCode,
   isActiveCorporationMember,
 } from "../_shared/corporations.ts";
+import { traced } from "../_shared/weave.ts";
 
 class CorporationInviteError extends Error {
   status: number;
@@ -33,7 +34,7 @@ class CorporationInviteError extends Error {
   }
 }
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("corporation_regenerate_invite_code", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -63,13 +64,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const actorCharacterId = optionalString(payload, "actor_character_id");
   ensureActorMatches(actorCharacterId, characterId);
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(
       supabase,
       characterId,
       "corporation_regenerate_invite_code",
     );
+    sRateLimit.end();
   } catch (err) {
+    sRateLimit.end({ error: err instanceof Error ? err.message : String(err) });
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -85,7 +89,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const sHandleRegenerate = trace.span("handle_regenerate", { characterId });
     const result = await handleRegenerate({ supabase, characterId, requestId });
+    sHandleRegenerate.end(result);
     return successResponse({ ...result, request_id: requestId });
   } catch (err) {
     if (err instanceof CorporationInviteError) {
@@ -94,7 +100,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("corporation_regenerate_invite_code.unhandled", err);
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleRegenerate(params: {
   supabase: ReturnType<typeof createServiceRoleClient>;

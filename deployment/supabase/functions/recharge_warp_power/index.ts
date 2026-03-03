@@ -37,6 +37,7 @@ import {
   loadUniverseMeta,
   isMegaPortSector,
 } from "../_shared/fedspace.ts";
+import { traced } from "../_shared/weave.ts";
 
 class RechargeWarpPowerError extends Error {
   status: number;
@@ -50,7 +51,7 @@ class RechargeWarpPowerError extends Error {
 
 const PRICE_PER_UNIT = 2;
 
-Deno.serve(async (req: Request): Promise<Response> => {
+Deno.serve(traced("recharge_warp_power", async (req, trace) => {
   if (!validateApiToken(req)) {
     return unauthorizedResponse();
   }
@@ -85,9 +86,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
+  const sRateLimit = trace.span("rate_limit");
   try {
     await enforceRateLimit(supabase, characterId, "recharge_warp_power");
   } catch (err) {
+    sRateLimit.end();
     if (err instanceof RateLimitError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -101,9 +104,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.error("recharge_warp_power.rate_limit", err);
     return errorResponse("rate limit error", 500);
   }
+  sRateLimit.end();
 
+  const sHandle = trace.span("handle_recharge");
   try {
-    return await handleRecharge(
+    const result = await handleRecharge(
       supabase,
       payload,
       characterId,
@@ -113,7 +118,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       adminOverride,
       taskId,
     );
+    sHandle.end();
+    return result;
   } catch (err) {
+    sHandle.end();
     if (err instanceof ActorAuthorizationError) {
       await emitErrorEvent(supabase, {
         characterId,
@@ -144,7 +152,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     return errorResponse("internal server error", 500);
   }
-});
+}));
 
 async function handleRecharge(
   supabase: ReturnType<typeof createServiceRoleClient>,
