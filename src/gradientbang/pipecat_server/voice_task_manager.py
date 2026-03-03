@@ -2267,6 +2267,12 @@ class VoiceTaskManager:
                 task_agent.set_task_metadata(task_metadata)
                 task_agent.reset_task_state()
 
+            # Tag the game client with the task_id so the my_status RPC includes
+            # it in the payload and the resulting status.snapshot event can be
+            # routed back to this task via the corp-event fan-out.
+            if ship_id:
+                task_game_client.current_task_id = full_task_id
+
             # call my_status so the first thing the task gets is a status.snapshot event
             # Note: my_status will automatically recover ships stuck in hyperspace
             try:

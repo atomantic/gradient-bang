@@ -188,16 +188,25 @@ Deno.serve(traced("my_status", async (req, trace) => {
     statusPayload["source"] = source;
     sBuildStatus.end();
 
+    // For corp ships the recipient should be the actor (the player controlling
+    // the ship) rather than the ship's pseudo-character which nothing polls for.
+    // We also set corp_id so the event is discoverable via events_since corp_id
+    // polling.
+    const isCorpShip = actorCharacterId && ship.owner_corporation_id;
+    const eventRecipientId = isCorpShip ? actorCharacterId : characterId;
+    const eventCorpId = isCorpShip ? ship.owner_corporation_id : undefined;
+
     const sEmitEvent = trace.span("emit_status_snapshot");
     await emitCharacterEvent({
       supabase,
-      characterId,
+      characterId: eventRecipientId,
       eventType: "status.snapshot",
       payload: statusPayload,
       shipId: ship.ship_id,
       sectorId: ship.current_sector ?? null,
       requestId,
       taskId,
+      corpId: eventCorpId,
       scope: "direct",
     });
     sEmitEvent.end();

@@ -251,6 +251,7 @@ Deno.serve(traced("task_lifecycle", async (req, trace) => {
       requestId,
       taskId,
       shipId: shipId ?? undefined,
+      corpId: effectiveCorpId ?? undefined,
       recipientReason: "task_owner",
       scope: "self",
       additionalRecipients, // Corp members added here
