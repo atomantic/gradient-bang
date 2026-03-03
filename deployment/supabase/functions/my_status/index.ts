@@ -32,7 +32,7 @@ import {
   ensureActorAuthorization,
   ActorAuthorizationError,
 } from "../_shared/actors.ts";
-import { createPgClient, connectWithCleanup } from "../_shared/pg.ts";
+import { acquirePgClient } from "../_shared/pg.ts";
 import { pgFinishHyperspace, pgMarkSectorVisited } from "../_shared/pg_queries.ts";
 import { traced } from "../_shared/weave.ts";
 
@@ -133,9 +133,8 @@ Deno.serve(traced("my_status", async (req, trace) => {
         });
 
         const sRecovery = trace.span("hyperspace_recovery");
-        const pgClient = createPgClient();
+        const pgClient = await acquirePgClient();
         try {
-          await connectWithCleanup(pgClient);
           await pgFinishHyperspace(pgClient, {
             shipId: ship.ship_id,
             destination: ship.hyperspace_destination,
@@ -168,7 +167,7 @@ Deno.serve(traced("my_status", async (req, trace) => {
           });
           return errorResponse("failed to recover from stuck hyperspace", 500);
         } finally {
-          await pgClient.end();
+          pgClient.release();
         }
       } else {
         // Ship is legitimately in hyperspace - return error

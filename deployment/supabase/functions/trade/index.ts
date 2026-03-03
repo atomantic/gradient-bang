@@ -8,7 +8,7 @@ import {
 } from "../_shared/auth.ts";
 import { createServiceRoleClient } from "../_shared/client.ts";
 import { emitErrorEvent, buildEventSource } from "../_shared/events.ts";
-import { createPgClient } from "../_shared/pg.ts";
+import { acquirePgClient } from "../_shared/pg.ts";
 import {
   pgEnforceRateLimit,
   pgLoadCharacter,
@@ -54,7 +54,7 @@ import {
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
-import type { Client } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
+import type { QueryClient } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 import { traced } from "../_shared/weave.ts";
 
 class TradeError extends Error {
@@ -105,8 +105,7 @@ Deno.serve(traced("trade", async (req, wt) => {
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
   const taskId = optionalString(payload, "task_id");
 
-  // Create PG client for direct database access
-  const pgClient = createPgClient();
+  const pgClient = await acquirePgClient();
 
   // Timing trace
   const trace: Record<string, number> = {};
@@ -116,11 +115,6 @@ Deno.serve(traced("trade", async (req, wt) => {
   };
 
   try {
-    const sPgConnect = wt.span("pg_connect");
-    await pgClient.connect();
-    mark("pg_connect");
-    sPgConnect.end();
-
     const sRateLimit = wt.span("rate_limit");
     try {
       await pgEnforceRateLimit(pgClient, characterId, "trade");
@@ -194,11 +188,7 @@ Deno.serve(traced("trade", async (req, wt) => {
       character_id: characterId,
       trace,
     });
-    try {
-      await pgClient.end();
-    } catch {
-      // Ignore cleanup errors
-    }
+    pgClient.release();
   }
 }));
 
@@ -214,7 +204,7 @@ async function handleTrade({
   trace,
   mark,
 }: {
-  pgClient: Client;
+  pgClient: QueryClient;
   supabase: ReturnType<typeof createServiceRoleClient>;
   payload: Record<string, unknown>;
   characterId: string;
@@ -457,7 +447,7 @@ function cargoTotal(cargo: Record<Commodity, number>): number {
 }
 
 async function executeTradeWithRetry(params: {
-  pgClient: Client;
+  pgClient: QueryClient;
   sectorId: number;
   commodity: Commodity;
   tradeType: TradeType;

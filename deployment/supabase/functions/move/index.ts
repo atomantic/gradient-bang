@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.197.0/http/server.ts";
-import { Client } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
+import type { QueryClient, PoolClient } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 
 import {
   validateApiToken,
@@ -13,7 +13,7 @@ import {
   emitErrorEvent,
   buildEventSource,
 } from "../_shared/events.ts";
-import { createPgClient, connectWithCleanup } from "../_shared/pg.ts";
+import { acquirePgClient } from "../_shared/pg.ts";
 import {
   parseJsonRequest,
   requireString,
@@ -26,7 +26,7 @@ import {
 import { canonicalizeCharacterId } from "../_shared/ids.ts";
 import { ActorAuthorizationError } from "../_shared/actors.ts";
 import { checkGarrisonAutoEngage } from "../_shared/garrison_combat.ts";
-import { traced } from "../_shared/weave.ts";
+import { traced, type WeaveSpan } from "../_shared/weave.ts";
 import { deserializeCombat } from "../_shared/combat_state.ts";
 import type {
   CharacterRow,
@@ -75,7 +75,7 @@ Deno.serve(traced("move", async (req, wt) => {
   }
 
   const supabase = createServiceRoleClient();
-  const pgClient = createPgClient();
+  const pgClient = await acquirePgClient();
   const tStart = performance.now();
   const trace: Record<string, number> = {};
   const mark = (label: string) => {
@@ -83,20 +83,6 @@ Deno.serve(traced("move", async (req, wt) => {
   };
 
   try {
-    const sPgConnect = wt.span("pg_connect");
-    try {
-      await pgClient.connect();
-      mark("pg_connect");
-      sPgConnect.end();
-    } catch (pgConnectError) {
-      sPgConnect.end({ error: String(pgConnectError) });
-      console.error("move.pg_connect_error", pgConnectError);
-      return errorResponse(
-        `Failed to connect to database: ${pgConnectError instanceof Error ? pgConnectError.message : "unknown error"}`,
-        500,
-      );
-    }
-
     let payload;
     try {
       payload = await parseJsonRequest(req);
@@ -173,7 +159,7 @@ Deno.serve(traced("move", async (req, wt) => {
     } as const;
 
     const sHandleMove = wt.span("handle_move", { character_id: characterId, destination });
-    const result = await handleMove(moveContext);
+    const result = await handleMove({ ...moveContext, ws: sHandleMove });
     sHandleMove.end();
     const tEnd = performance.now();
     trace["total"] = Math.round(tEnd - tStart);
@@ -185,12 +171,8 @@ Deno.serve(traced("move", async (req, wt) => {
     });
     return result;
   } finally {
-    // pgClient may already be closed by completeMovement - safe to call end() anyway
-    try {
-      await pgClient.end();
-    } catch {
-      // Already closed, ignore
-    }
+    // pgClient may already be released by completeMovement - safe to call release() again
+    pgClient.release();
   }
 }));
 
@@ -205,9 +187,10 @@ async function handleMove({
   taskId,
   trace,
   mark,
+  ws,
 }: {
   supabase: ReturnType<typeof createServiceRoleClient>;
-  pgClient: Client;
+  pgClient: QueryClient;
   characterId: string;
   destination: number;
   requestId: string;
@@ -216,6 +199,7 @@ async function handleMove({
   taskId: string | null;
   trace: Record<string, number>;
   mark: (label: string) => void;
+  ws: WeaveSpan;
 }): Promise<Response> {
   const source = buildEventSource("move", requestId);
   let observerMetadata: ObserverMetadata;
@@ -225,14 +209,21 @@ async function handleMove({
   let shipDefinition: ShipDefinitionRow;
   try {
     // Load character first (needed to get current_ship_id)
+    const sLoadChar = ws.span("load_character");
     character = await pgLoadCharacter(pgClient, characterId);
     mark("load_character");
+    sLoadChar.end();
 
     // Load ship (need ship_type for definition)
+    const sLoadShip = ws.span("load_ship");
     ship = await pgLoadShip(pgClient, character.current_ship_id);
     mark("load_ship");
+    sLoadShip.end();
+
+    const sLoadShipDef = ws.span("load_ship_definition");
     shipDefinition = await pgLoadShipDefinition(pgClient, ship.ship_type);
     mark("load_ship_definition");
+    sLoadShipDef.end();
   } catch (err) {
     console.error("move.load_state", err);
     await emitErrorEvent(supabase, {
@@ -246,6 +237,7 @@ async function handleMove({
   }
 
   // Actor authorization check
+  const sAuth = ws.span("auth");
   try {
     await ensureActorAuthorizationPg({
       pgClient,
@@ -255,7 +247,9 @@ async function handleMove({
       targetCharacterId: characterId,
     });
     mark("auth");
+    sAuth.end();
   } catch (err) {
+    sAuth.end({ error: String(err) });
     if (err instanceof ActorAuthorizationError) {
       console.warn("move.authorization", err.message);
       return errorResponse(err.message, err.status);
@@ -278,6 +272,10 @@ async function handleMove({
         seconds_overdue: Math.round((now - eta) / 1000),
       });
       // Complete the stuck hyperspace jump before proceeding
+      const sRecovery = ws.span("hyperspace_recovery", {
+        stuck_destination: ship.hyperspace_destination,
+        seconds_overdue: Math.round((now - eta) / 1000),
+      });
       try {
         await pgFinishHyperspace(pgClient, {
           shipId: ship.ship_id,
@@ -288,7 +286,9 @@ async function handleMove({
         ship.current_sector = ship.hyperspace_destination;
         ship.hyperspace_destination = null;
         ship.hyperspace_eta = null;
+        sRecovery.end();
       } catch (recoveryErr) {
+        sRecovery.end({ error: String(recoveryErr) });
         console.error("move.hyperspace_recovery_failed", recoveryErr);
         await emitErrorEvent(supabase, {
           characterId,
@@ -316,11 +316,13 @@ async function handleMove({
   }
 
   // Parallelize combat check and adjacent sectors lookup
+  const sLoadCombatAdj = ws.span("load_combat_and_adjacent");
   const [combatRow, adjacent] = await Promise.all([
     pgLoadCombatForSector(pgClient, ship.current_sector),
     pgGetAdjacentSectors(pgClient, ship.current_sector),
   ]);
   mark("load_combat_and_adjacent");
+  sLoadCombatAdj.end();
 
   if (combatRow) {
     const combat = deserializeCombat({
@@ -393,6 +395,7 @@ async function handleMove({
   let enteredHyperspace = false;
 
   let destinationSnapshot: SectorSnapshot;
+  const sDestSnap = ws.span("build_destination_snapshot");
   try {
     destinationSnapshot = await pgBuildSectorSnapshot(
       pgClient,
@@ -400,7 +403,9 @@ async function handleMove({
       characterId,
     );
     mark("build_destination_snapshot");
+    sDestSnap.end();
   } catch (err) {
+    sDestSnap.end({ error: String(err) });
     console.error("move.destination_snapshot", err);
     await emitErrorEvent(supabase, {
       characterId,
@@ -413,6 +418,7 @@ async function handleMove({
   }
 
   try {
+    const sStartHyper = ws.span("start_hyperspace");
     await pgStartHyperspace(pgClient, {
       shipId: ship.ship_id,
       currentSector: ship.current_sector,
@@ -421,11 +427,15 @@ async function handleMove({
       newWarpTotal: ship.current_warp_power - warpCost,
     });
     mark("start_hyperspace");
+    sStartHyper.end();
     enteredHyperspace = true;
 
+    const sUpdateActive = ws.span("update_last_active");
     await pgUpdateCharacterLastActive(pgClient, characterId);
     mark("update_last_active");
+    sUpdateActive.end();
 
+    const sEmitStart = ws.span("emit_movement_start");
     await pgEmitCharacterEvent({
       pg: pgClient,
       characterId,
@@ -445,7 +455,9 @@ async function handleMove({
       taskId,
     });
     mark("emit_movement_start");
+    sEmitStart.end();
 
+    const sEmitDepart = ws.span("emit_depart_observers");
     await pgEmitMovementObservers({
       pg: pgClient,
       sectorId: ship.current_sector,
@@ -454,7 +466,9 @@ async function handleMove({
       source,
       requestId,
     });
+    sEmitDepart.end();
 
+    const sComplete = ws.span("complete_movement");
     await completeMovement({
       supabase,
       pgClient,
@@ -472,7 +486,9 @@ async function handleMove({
       observerMetadata,
       trace,
       mark,
+      ws: sComplete,
     });
+    sComplete.end();
 
     enteredHyperspace = false;
 
@@ -502,11 +518,11 @@ async function handleMove({
     return errorResponse("internal server error", 500);
   } finally {
     if (enteredHyperspace) {
-      // Original pgClient may have been closed during completeMovement,
-      // so we need a fresh connection for cleanup
-      const cleanupPg = createPgClient();
+      // Original pgClient may have been released during completeMovement,
+      // so we need a fresh connection from the pool for cleanup
+      let cleanupPg;
       try {
-        await cleanupPg.connect();
+        cleanupPg = await acquirePgClient();
         await pgFinishHyperspace(cleanupPg, {
           shipId: ship.ship_id,
           destination: ship.current_sector ?? 0,
@@ -514,7 +530,7 @@ async function handleMove({
       } catch (cleanupErr) {
         console.error("move.cleanup_hyperspace", cleanupErr);
       } finally {
-        await cleanupPg.end();
+        cleanupPg?.release();
       }
     }
   }
@@ -529,7 +545,7 @@ async function ensureActorAuthorizationPg({
   targetCharacterId,
   requireActorForCorporationShip = true,
 }: {
-  pgClient: Client;
+  pgClient: QueryClient;
   ship: ShipRow | null;
   actorCharacterId: string | null;
   adminOverride: boolean;
@@ -615,9 +631,10 @@ async function completeMovement({
   observerMetadata,
   trace,
   mark,
+  ws,
 }: {
   supabase: ReturnType<typeof createServiceRoleClient>;
-  pgClient: Client;
+  pgClient: PoolClient;
   character: CharacterRow;
   ship: ShipRow;
   shipDefinition: ShipDefinitionRow;
@@ -632,40 +649,49 @@ async function completeMovement({
   observerMetadata: ObserverMetadata;
   trace: Record<string, number>;
   mark: (label: string) => void;
+  ws: WeaveSpan;
 }): Promise<void> {
   const corpId =
     ship.owner_type === "corporation"
       ? ship.owner_corporation_id
       : character.corporation_id;
-  // Release the connection BEFORE the delay to free it for other requests.
+  // Release the connection back to the pool BEFORE the delay.
   // This is critical for connection pool efficiency under concurrent load.
-  await pgClient.end();
+  pgClient.release();
   mark("pg_release_for_delay");
 
+  const sDelay = ws.span("hyperspace_delay", { seconds: hyperspaceSeconds });
   if (hyperspaceSeconds > 0) {
     await new Promise((resolve) =>
       setTimeout(resolve, hyperspaceSeconds * 1000),
     );
   }
   mark("delay_done");
+  sDelay.end();
 
-  // Reconnect AFTER the delay to complete the move
-  const pg = createPgClient();
+  // Reacquire from pool AFTER the delay to complete the move
+  const pg = await acquirePgClient();
   try {
-    await connectWithCleanup(pg);
-    mark("pg_reconnect");
+    mark("pg_reacquire");
 
+    const sFinishHyper = ws.span("finish_hyperspace");
     await pgFinishHyperspace(pg, { shipId, destination });
     mark("finish_hyperspace");
+    sFinishHyper.end();
 
+    const sUpdateActive = ws.span("update_last_active");
     await pgUpdateCharacterLastActive(pg, characterId);
     mark("update_character_last_active");
+    sUpdateActive.end();
 
     // Re-load ship to get updated warp_power after move, but reuse character and definition
+    const sLoadUpdatedShip = ws.span("load_updated_ship");
     const updatedShip = await pgLoadShip(pg, shipId);
     // Update ship's current_sector to destination for status payload
     updatedShip.current_sector = destination;
+    sLoadUpdatedShip.end();
 
+    const sBuildStatus = ws.span("build_status_payload");
     const statusPayload = await pgBuildStatusPayload(pg, characterId, {
       character,
       ship: updatedShip,
@@ -673,18 +699,23 @@ async function completeMovement({
       sectorSnapshot: destinationSnapshot,
     });
     mark("build_status_complete");
+    sBuildStatus.end();
 
     // Mark sector visited (updates personal or corp knowledge depending on player type)
+    const sMarkVisited = ws.span("mark_sector_visited");
     const { firstPersonalVisit, knownToCorp } = await pgMarkSectorVisited(pg, {
       characterId,
       sectorId: destination,
       sectorSnapshot: destinationSnapshot,
     });
     mark("mark_sector_visited");
+    sMarkVisited.end();
 
     // Load merged knowledge for local map (personal + corp)
+    const sLoadMapKnow = ws.span("load_map_knowledge");
     const mergedKnowledge = await pgLoadMapKnowledge(pg, characterId);
     mark("load_map_knowledge");
+    sLoadMapKnow.end();
 
     const sectorPayload = statusPayload.sector as Record<string, unknown>;
     const portPayload = sectorPayload?.port as Record<string, unknown> | null;
@@ -699,6 +730,7 @@ async function completeMovement({
       has_megaport: portPayload?.mega === true,
     } as Record<string, unknown>;
 
+    const sEmitComplete = ws.span("emit_movement_complete");
     await pgEmitCharacterEvent({
       pg,
       characterId,
@@ -710,7 +742,9 @@ async function completeMovement({
       taskId,
     });
     mark("emit_movement_complete");
+    sEmitComplete.end();
 
+    const sBuildMap = ws.span("build_local_map");
     const mapRegion = await pgBuildLocalMapRegion(pg, {
       characterId,
       centerSector: destination,
@@ -719,9 +753,13 @@ async function completeMovement({
       maxSectors: MAX_LOCAL_MAP_NODES,
     });
     mark("build_local_map");
+    sBuildMap.end();
     (mapRegion as Record<string, unknown>)["source"] = source;
 
     if (firstPersonalVisit && !knownToCorp) {
+      const sCorpMapUpdate = ws.span("corp_map_update");
+
+      const sBuildUpdateRegion = sCorpMapUpdate.span("build_map_update_region");
       const mapUpdateRegion = await pgBuildLocalMapRegion(pg, {
         characterId,
         centerSector: destination,
@@ -730,10 +768,14 @@ async function completeMovement({
         maxSectors: MAX_LOCAL_MAP_NODES,
       });
       mark("build_map_update_region");
+      sBuildUpdateRegion.end();
 
+      const sCorpRecipients = sCorpMapUpdate.span("compute_corp_recipients");
       const mapUpdateRecipients = corpId
         ? await pgComputeCorpMemberRecipients(pg, [corpId], [characterId])
         : [];
+      sCorpRecipients.end();
+
       const mapUpdatePayload: Record<string, unknown> = {
         center_sector: mapUpdateRegion.center_sector,
         sectors: mapUpdateRegion.sectors,
@@ -742,6 +784,7 @@ async function completeMovement({
         total_unvisited: mapUpdateRegion.total_unvisited,
         source,
       };
+      const sEmitMapUpdate = sCorpMapUpdate.span("emit_map_update");
       await pgEmitCharacterEvent({
         pg,
         characterId,
@@ -754,8 +797,12 @@ async function completeMovement({
         additionalRecipients: mapUpdateRecipients,
       });
       mark("emit_map_update");
+      sEmitMapUpdate.end();
+
+      sCorpMapUpdate.end();
     }
 
+    const sEmitMapLocal = ws.span("emit_map_local");
     await pgEmitCharacterEvent({
       pg,
       characterId,
@@ -767,6 +814,7 @@ async function completeMovement({
       corpId: character.corporation_id,
     });
     mark("emit_map_local");
+    sEmitMapLocal.end();
 
     // For arrival events, include corp visibility if it's a corp ship
     const corpIds =
@@ -774,6 +822,7 @@ async function completeMovement({
         ? [ship.owner_corporation_id]
         : [];
 
+    const sEmitArrive = ws.span("emit_arrive_observers");
     await pgEmitMovementObservers({
       pg,
       sectorId: destination,
@@ -783,9 +832,11 @@ async function completeMovement({
       requestId,
       corpIds, // Corp visibility for arrivals
     });
+    sEmitArrive.end();
 
     // Check for garrison auto-combat after arrival
     // Use fast pg check first, only fall back to REST if combat initiation needed
+    const sGarrison = ws.span("garrison_auto_engage");
     try {
       const needsCombat = await pgCheckGarrisonAutoEngage({
         pg,
@@ -802,7 +853,9 @@ async function completeMovement({
           requestId,
         });
       }
+      sGarrison.end();
     } catch (garrisonError) {
+      sGarrison.end({ error: String(garrisonError) });
       // Log but don't fail the move if garrison combat fails
       console.error("move.garrison_auto_engage", garrisonError);
     }
@@ -818,6 +871,6 @@ async function completeMovement({
     });
     throw error; // Re-throw so caller knows completion failed
   } finally {
-    await pg.end();
+    pg.release();
   }
 }

@@ -3,7 +3,7 @@
  * Uses the Deno Postgres client for efficient database access.
  */
 
-import { Client } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
+import type { QueryClient } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 import { RATE_LIMITS } from "./constants.ts";
 import type { CharacterRow, ShipRow, ShipDefinitionRow } from "./status.ts";
 import type {
@@ -103,7 +103,7 @@ export function pgIsMegaPortSector(
   return sectorId === 0;
 }
 
-export async function pgLoadUniverseMeta(pg: Client): Promise<UniverseMeta> {
+export async function pgLoadUniverseMeta(pg: QueryClient): Promise<UniverseMeta> {
   if (cachedUniverseMeta && cachedUniverseMetaExpiresAt > Date.now()) {
     return cachedUniverseMeta;
   }
@@ -116,7 +116,7 @@ export async function pgLoadUniverseMeta(pg: Client): Promise<UniverseMeta> {
 }
 
 async function pgIsFedspaceSector(
-  pg: Client,
+  pg: QueryClient,
   sectorId: number,
   meta?: UniverseMeta,
 ): Promise<boolean> {
@@ -150,7 +150,7 @@ export class RateLimitError extends Error {
 }
 
 export async function pgEnforceRateLimit(
-  pg: Client,
+  pg: QueryClient,
   characterId: string | null,
   endpoint: string,
 ): Promise<void> {
@@ -176,7 +176,7 @@ export async function pgEnforceRateLimit(
 // ============================================================================
 
 export async function pgLoadCharacter(
-  pg: Client,
+  pg: QueryClient,
   characterId: string,
 ): Promise<CharacterRow> {
   const result = await pg.queryObject<CharacterRow>(
@@ -206,7 +206,7 @@ export async function pgLoadCharacter(
   return convertBigInts(row);
 }
 
-export async function pgLoadShip(pg: Client, shipId: string): Promise<ShipRow> {
+export async function pgLoadShip(pg: QueryClient, shipId: string): Promise<ShipRow> {
   const result = await pg.queryObject<ShipRow>(
     `SELECT
       ship_id,
@@ -241,7 +241,7 @@ export async function pgLoadShip(pg: Client, shipId: string): Promise<ShipRow> {
 }
 
 export async function pgLoadShipDefinition(
-  pg: Client,
+  pg: QueryClient,
   shipType: string,
 ): Promise<ShipDefinitionRow> {
   const result = await pg.queryObject<ShipDefinitionRow>(
@@ -271,7 +271,7 @@ export async function pgLoadShipDefinition(
 // ============================================================================
 
 export async function pgEnsureActorCanControlShip(
-  pg: Client,
+  pg: QueryClient,
   actorId: string,
   corpId: string,
 ): Promise<boolean> {
@@ -297,7 +297,7 @@ interface CombatRow {
 }
 
 export async function pgLoadCombatForSector(
-  pg: Client,
+  pg: QueryClient,
   sectorId: number,
 ): Promise<{ combat: unknown; sector_id: number } | null> {
   const result = await pg.queryObject<CombatRow>(
@@ -326,7 +326,7 @@ interface SectorRow {
 }
 
 export async function pgFetchSectorRow(
-  pg: Client,
+  pg: QueryClient,
   sectorId: number,
 ): Promise<SectorRow | null> {
   const result = await pg.queryObject<SectorRow>(
@@ -339,7 +339,7 @@ export async function pgFetchSectorRow(
 }
 
 export async function pgGetAdjacentSectors(
-  pg: Client,
+  pg: QueryClient,
   sectorId: number,
 ): Promise<number[]> {
   const row = await pgFetchSectorRow(pg, sectorId);
@@ -352,7 +352,7 @@ export interface ShortestPathResult {
 }
 
 export async function pgFindShortestPath(
-  pg: Client,
+  pg: QueryClient,
   params: { fromSector: number; toSector: number },
 ): Promise<ShortestPathResult | null> {
   const { fromSector, toSector } = params;
@@ -464,7 +464,7 @@ export class MoveError extends Error {
 }
 
 export async function pgStartHyperspace(
-  pg: Client,
+  pg: QueryClient,
   params: {
     shipId: string;
     currentSector: number;
@@ -495,7 +495,7 @@ export async function pgStartHyperspace(
 }
 
 export async function pgFinishHyperspace(
-  pg: Client,
+  pg: QueryClient,
   params: {
     shipId: string;
     destination: number;
@@ -524,7 +524,7 @@ export async function pgFinishHyperspace(
 // ============================================================================
 
 export async function pgUpdateCharacterLastActive(
-  pg: Client,
+  pg: QueryClient,
   characterId: string,
 ): Promise<void> {
   await pg.queryObject(
@@ -553,7 +553,7 @@ function setPlayerSource(knowledge: MapKnowledge): MapKnowledge {
 }
 
 export async function pgLoadMapKnowledge(
-  pg: Client,
+  pg: QueryClient,
   characterId: string,
 ): Promise<MapKnowledge> {
   const result = await pg.queryObject<{
@@ -582,7 +582,7 @@ export async function pgLoadMapKnowledge(
 }
 
 export async function pgUpdateMapKnowledge(
-  pg: Client,
+  pg: QueryClient,
   characterId: string,
   knowledge: MapKnowledge,
 ): Promise<void> {
@@ -599,7 +599,7 @@ export async function pgUpdateMapKnowledge(
 // ============================================================================
 
 export async function pgUpsertCorporationSectorKnowledge(
-  pg: Client,
+  pg: QueryClient,
   params: {
     corpId: string;
     sectorId: number;
@@ -719,7 +719,7 @@ function formatShipDisplayName(shipType: string): string {
 }
 
 export async function pgBuildSectorSnapshot(
-  pg: Client,
+  pg: QueryClient,
   sectorId: number,
   currentCharacterId?: string,
 ): Promise<SectorSnapshot> {
@@ -1159,7 +1159,7 @@ export async function pgBuildSectorSnapshot(
 
 let cachedUniverseSize: number | null = null;
 
-async function pgLoadUniverseSize(pg: Client): Promise<number> {
+async function pgLoadUniverseSize(pg: QueryClient): Promise<number> {
   if (cachedUniverseSize !== null) {
     return cachedUniverseSize;
   }
@@ -1241,7 +1241,7 @@ function buildShipSnapshot(
 }
 
 export interface PgBuildStatusPayloadOptions {
-  pg: Client;
+  pg: QueryClient;
   characterId: string;
   // Optional pre-loaded data to avoid re-fetching
   character?: CharacterRow;
@@ -1251,7 +1251,7 @@ export interface PgBuildStatusPayloadOptions {
 }
 
 export async function pgBuildStatusPayload(
-  pg: Client,
+  pg: QueryClient,
   characterId: string,
   options?: Omit<PgBuildStatusPayloadOptions, "pg" | "characterId">,
 ): Promise<Record<string, unknown>> {
@@ -1324,7 +1324,7 @@ interface UniverseRow {
 }
 
 async function pgFetchUniverseRows(
-  pg: Client,
+  pg: QueryClient,
   sectorIds: number[],
 ): Promise<
   Map<
@@ -1358,7 +1358,7 @@ async function pgFetchUniverseRows(
 }
 
 async function pgLoadPortCodes(
-  pg: Client,
+  pg: QueryClient,
   sectorIds: number[],
 ): Promise<Record<number, string>> {
   if (sectorIds.length === 0) {
@@ -1381,7 +1381,7 @@ async function pgLoadPortCodes(
 }
 
 async function pgLoadSectorGarrisons(
-  pg: Client,
+  pg: QueryClient,
   sectorIds: number[],
 ): Promise<Record<number, LocalMapSectorGarrison>> {
   if (sectorIds.length === 0) {
@@ -1496,7 +1496,7 @@ function extractPortCodeValue(
 }
 
 export async function pgBuildLocalMapRegion(
-  pg: Client,
+  pg: QueryClient,
   params: {
     characterId: string;
     centerSector: number;
@@ -1897,7 +1897,7 @@ export interface MarkSectorVisitedResult {
 }
 
 export async function pgMarkSectorVisited(
-  pg: Client,
+  pg: QueryClient,
   params: {
     characterId: string;
     sectorId: number;
@@ -2010,7 +2010,7 @@ export interface EventRecipientSnapshot {
 }
 
 export interface PgRecordEventOptions {
-  pg: Client;
+  pg: QueryClient;
   eventType: string;
   scope?: string;
   direction?: string;
@@ -2110,7 +2110,7 @@ export async function pgRecordEvent(
 }
 
 export interface PgEmitCharacterEventOptions {
-  pg: Client;
+  pg: QueryClient;
   characterId: string;
   eventType: string;
   payload: Record<string, unknown>;
@@ -2201,7 +2201,7 @@ interface EventSource {
 }
 
 async function pgListSectorObservers(
-  pg: Client,
+  pg: QueryClient,
   sectorId: number,
   exclude: string[] = [],
 ): Promise<string[]> {
@@ -2254,7 +2254,7 @@ interface GarrisonContext {
 }
 
 async function pgLoadGarrisonContext(
-  pg: Client,
+  pg: QueryClient,
   sectorId: number,
 ): Promise<GarrisonContext> {
   const garrisonResult = await pg.queryObject<GarrisonRow>(
@@ -2343,7 +2343,7 @@ function buildCharacterMovedPayload(
 }
 
 export interface PgMovementObserverOptions {
-  pg: Client;
+  pg: QueryClient;
   sectorId: number;
   metadata: ObserverMetadata;
   movement: "depart" | "arrive";
@@ -2367,7 +2367,7 @@ export interface MovementObserverResult {
  * Compute corp member recipients for event visibility.
  */
 export async function pgComputeCorpMemberRecipients(
-  pg: Client,
+  pg: QueryClient,
   corpIds: string[],
   excludeCharacterIds: string[] = [],
 ): Promise<EventRecipientSnapshot[]> {
@@ -2561,7 +2561,7 @@ interface GarrisonAutoEngageRow {
 }
 
 export interface PgCheckGarrisonAutoEngageOptions {
-  pg: Client;
+  pg: QueryClient;
   characterId: string;
   sectorId: number;
   requestId: string;
@@ -2668,7 +2668,7 @@ export async function pgCheckGarrisonAutoEngage(
 // ============================================================================
 
 export async function pgEnsureActorAuthorization(
-  pg: Client,
+  pg: QueryClient,
   options: {
     ship: ShipRow | null;
     actorCharacterId: string | null;
@@ -2771,7 +2771,7 @@ export interface PortRow {
 }
 
 export async function pgLoadPortBySector(
-  pg: Client,
+  pg: QueryClient,
   sectorId: number,
 ): Promise<PortRow | null> {
   const result = await pg.queryObject<PortRow>(
@@ -2788,7 +2788,7 @@ export async function pgLoadPortBySector(
 }
 
 export async function pgAttemptPortUpdate(
-  pg: Client,
+  pg: QueryClient,
   portRow: PortRow,
   updatedStock: { QF: number; RO: number; NS: number },
   observedAt: string,
@@ -2819,7 +2819,7 @@ export async function pgAttemptPortUpdate(
 }
 
 export async function pgRevertPortInventory(
-  pg: Client,
+  pg: QueryClient,
   previous: PortRow,
   current: PortRow,
 ): Promise<void> {
@@ -2851,7 +2851,7 @@ export interface ShipTradeUpdate {
 }
 
 export async function pgUpdateShipAfterTrade(
-  pg: Client,
+  pg: QueryClient,
   shipId: string,
   ownerId: string | null,
   updates: ShipTradeUpdate,
@@ -2894,7 +2894,7 @@ export interface PortTransactionParams {
 }
 
 export async function pgRecordPortTransaction(
-  pg: Client,
+  pg: QueryClient,
   params: PortTransactionParams,
 ): Promise<void> {
   await pg.queryObject(
@@ -2918,7 +2918,7 @@ export async function pgRecordPortTransaction(
 }
 
 export async function pgListCharactersInSector(
-  pg: Client,
+  pg: QueryClient,
   sectorId: number,
   excludeCharacterIds: string[] = [],
 ): Promise<string[]> {
@@ -2955,7 +2955,7 @@ export async function pgListCharactersInSector(
 
 // Execute port and ship updates in a transaction
 export async function pgExecuteTradeTransaction(
-  pg: Client,
+  pg: QueryClient,
   params: {
     portRow: PortRow;
     updatedStock: { QF: number; RO: number; NS: number };
@@ -3061,7 +3061,7 @@ export class JoinError extends Error {
  * Resolve and validate the target sector for joining.
  */
 export async function pgResolveTargetSector(
-  pg: Client,
+  pg: QueryClient,
   params: {
     sectorOverride: number | null;
     fallbackSector: number;
@@ -3087,7 +3087,7 @@ export async function pgResolveTargetSector(
  * Update ship state when joining (set sector, clear hyperspace).
  */
 export async function pgUpdateShipState(
-  pg: Client,
+  pg: QueryClient,
   params: {
     shipId: string;
     sectorId: number;
@@ -3124,7 +3124,7 @@ export async function pgUpdateShipState(
  * Ensure character is linked to their ship and update last_active.
  */
 export async function pgEnsureCharacterShipLink(
-  pg: Client,
+  pg: QueryClient,
   characterId: string,
   shipId: string,
 ): Promise<void> {
@@ -3163,7 +3163,7 @@ function parseAdjacentIds(structure: UniverseSectorRow): number[] {
  * Upsert map knowledge entry for a sector (when joining).
  */
 export async function pgUpsertKnowledgeEntry(
-  pg: Client,
+  pg: QueryClient,
   params: {
     characterId: string;
     sectorId: number;
@@ -3236,7 +3236,7 @@ export async function pgUpsertKnowledgeEntry(
  * Returns null if character not found.
  */
 export async function pgLoadCharacterForJoin(
-  pg: Client,
+  pg: QueryClient,
   characterId: string,
 ): Promise<(CharacterRow & { corporation_id: string | null }) | null> {
   const result = await pg.queryObject<

@@ -87,6 +87,9 @@ echo ""
 echo "==> Starting isolated Supabase instance (project: $PROJECT_ID)..."
 npx supabase start --workdir "$TEST_WORKDIR" 2>&1
 
+# Give PostgREST a moment to load its schema cache after migrations
+sleep 2
+
 echo ""
 echo "==> Extracting credentials..."
 # Use --output env for reliable machine-parseable output
@@ -113,6 +116,30 @@ fi
 echo "    SUPABASE_URL=$SUPABASE_URL"
 echo "    DB_URL=$DB_URL"
 echo "    (keys extracted successfully)"
+
+# ── 2b. Reload PostgREST schema cache ────────────────────────────────
+# After migrations, PostgREST may not have reloaded its schema cache.
+# Send a NOTIFY on the pgrst channel to trigger a reload, then wait.
+echo ""
+echo "==> Reloading PostgREST schema cache..."
+psql "$DB_URL" -c "NOTIFY pgrst, 'reload schema'" 2>/dev/null || true
+sleep 2
+
+# Verify PostgREST can see the schema by probing a known table
+for i in $(seq 1 10); do
+  PROBE=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+    -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+    "$SUPABASE_URL/rest/v1/events?select=id&limit=1" 2>/dev/null || echo "000")
+  if [ "$PROBE" = "200" ]; then
+    echo "    PostgREST schema cache loaded (probe $i)"
+    break
+  fi
+  if [ "$i" = "10" ]; then
+    echo "    WARNING: PostgREST schema cache may not be ready (last probe: $PROBE)"
+  fi
+  sleep 1
+done
 
 # ── 3. Export environment ───────────────────────────────────────────────
 export SUPABASE_URL

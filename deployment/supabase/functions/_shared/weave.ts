@@ -16,6 +16,8 @@ const WEAVE_BASE_URL = "https://trace.wandb.ai";
 // ---------------------------------------------------------------------------
 
 export interface WeaveSpan {
+  /** Create a child span under this span. Call span.end() when done. */
+  span(opName: string, inputs?: Record<string, unknown>): WeaveSpan;
   end(output?: Record<string, unknown>): void;
 }
 
@@ -32,7 +34,7 @@ export interface WeaveTrace {
 // No-op implementations (used when Weave is disabled)
 // ---------------------------------------------------------------------------
 
-const NOOP_SPAN: WeaveSpan = { end() {} };
+const NOOP_SPAN: WeaveSpan = { span() { return NOOP_SPAN; }, end() {} };
 const NOOP_TRACE: WeaveTrace = {
   span() {
     return NOOP_SPAN;
@@ -61,7 +63,26 @@ interface SpanRecord {
 // ---------------------------------------------------------------------------
 
 class WeaveSpanImpl implements WeaveSpan {
-  constructor(private record: SpanRecord) {}
+  constructor(
+    private record: SpanRecord,
+    private spans: SpanRecord[],
+    private traceId: string,
+  ) {}
+
+  span(opName: string, inputs?: Record<string, unknown>): WeaveSpan {
+    const record: SpanRecord = {
+      id: crypto.randomUUID(),
+      parentId: this.record.id,
+      traceId: this.traceId,
+      opName,
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      inputs: inputs ?? {},
+      output: {},
+    };
+    this.spans.push(record);
+    return new WeaveSpanImpl(record, this.spans, this.traceId);
+  }
 
   end(output?: Record<string, unknown>) {
     this.record.endedAt = new Date().toISOString();
@@ -101,7 +122,7 @@ class WeaveTraceImpl implements WeaveTrace {
       output: {},
     };
     this.spans.push(record);
-    return new WeaveSpanImpl(record);
+    return new WeaveSpanImpl(record, this.spans, this.traceId);
   }
 
   setOutput(output: Record<string, unknown>) {

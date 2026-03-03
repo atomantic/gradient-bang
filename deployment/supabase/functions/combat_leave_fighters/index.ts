@@ -7,7 +7,8 @@ import {
   successResponse,
 } from "../_shared/auth.ts";
 import { createServiceRoleClient } from "../_shared/client.ts";
-import { createPgClient, connectWithCleanup } from "../_shared/pg.ts";
+import { acquirePgClient } from "../_shared/pg.ts";
+import type { QueryClient } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 import {
   emitCharacterEvent,
   emitErrorEvent,
@@ -102,14 +103,9 @@ Deno.serve(traced("combat_leave_fighters", async (req, trace) => {
     return errorResponse("quantity is required", 400);
   }
 
-  // Create PG client for direct database access
-  const pg = createPgClient();
+  const pg = await acquirePgClient();
 
   try {
-    const sPgConnect = trace.span("pg_connect");
-    await connectWithCleanup(pg);
-    sPgConnect.end();
-
     // Rate limiting via PG
     const sRateLimit = trace.span("rate_limit");
     try {
@@ -172,16 +168,12 @@ Deno.serve(traced("combat_leave_fighters", async (req, trace) => {
     });
     return errorResponse("leave fighters error", status);
   } finally {
-    try {
-      await pg.end();
-    } catch {
-      // Ignore cleanup errors
-    }
+    pg.release();
   }
 }));
 
 async function handleCombatLeaveFighters(params: {
-  pg: Awaited<ReturnType<typeof createPgClient>>;
+  pg: QueryClient;
   supabase: ReturnType<typeof createServiceRoleClient>;
   requestId: string;
   characterId: string;
