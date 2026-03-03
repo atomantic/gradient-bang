@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { WeaveSpan } from "./weave.ts";
 
 import { resolvePlayerType } from "./status.ts";
 import { isMegaPortSector, loadUniverseMeta } from "./fedspace.ts";
@@ -1054,92 +1055,58 @@ function extractPortCodeValue(
 export async function findShortestPath(
   supabase: SupabaseClient,
   params: { fromSector: number; toSector: number },
+  parentSpan?: WeaveSpan,
 ): Promise<ShortestPathResult> {
+  const noopSpan: WeaveSpan = { span() { return noopSpan; }, end() {} };
+  const ws = parentSpan ?? noopSpan;
+
   const { fromSector, toSector } = params;
   if (fromSector === toSector) {
     return { path: [fromSector], distance: 0 };
   }
 
-  const adjacencyCache = new Map<number, number[]>();
-  const universeRowCache = new Map<
-    number,
-    { position: [number, number]; region: string | null; warps: WarpEdge[] }
-  >();
+  // Load the full adjacency graph in a single query
+  const sLoad = ws.span("load_all_adjacencies");
+  const adjacency = await fetchAllAdjacencies(supabase);
+  sLoad.end({ sectorCount: adjacency.size });
 
-  const hydrateUniverseRows = async (sectorIds: number[]): Promise<void> => {
-    const missing = sectorIds.filter((id) => !universeRowCache.has(id));
-    if (missing.length === 0) {
-      return;
-    }
-    const rows = await fetchUniverseRows(supabase, missing);
-    for (const [id, row] of rows) {
-      universeRowCache.set(id, row);
-    }
-    for (const id of missing) {
-      if (!universeRowCache.has(id)) {
-        throw new Error(`sector ${id} does not exist`);
-      }
-    }
-  };
+  if (!adjacency.has(fromSector)) {
+    throw new Error(`sector ${fromSector} does not exist`);
+  }
+  if (!adjacency.has(toSector)) {
+    throw new Error(`sector ${toSector} does not exist`);
+  }
 
-  const ensureAdjacency = async (sectorIds: number[]): Promise<void> => {
-    const toFetch: number[] = [];
-    for (const sectorId of sectorIds) {
-      if (adjacencyCache.has(sectorId)) {
-        continue;
-      }
-      const row = universeRowCache.get(sectorId);
-      if (row) {
-        adjacencyCache.set(
-          sectorId,
-          row.warps.map((edge) => edge.to),
-        );
-      } else {
-        toFetch.push(sectorId);
-      }
-    }
-    if (toFetch.length === 0) {
-      return;
-    }
-    await hydrateUniverseRows(toFetch);
-    for (const sectorId of toFetch) {
-      const row = universeRowCache.get(sectorId);
-      const neighbors = row?.warps.map((edge) => edge.to) ?? [];
-      adjacencyCache.set(sectorId, neighbors);
-    }
-  };
-
-  await hydrateUniverseRows([fromSector, toSector]);
-
+  // Pure in-memory BFS
+  const sBfs = ws.span("bfs");
   const visited = new Set<number>([fromSector]);
   const parents = new Map<number, number | null>([[fromSector, null]]);
   let frontier: number[] = [fromSector];
-
-  const buildPath = (target: number): number[] => {
-    const path: number[] = [];
-    let current: number | null | undefined = target;
-    while (current !== null && current !== undefined) {
-      path.unshift(current);
-      current = parents.get(current) ?? null;
-    }
-    return path;
-  };
+  let bfsRound = 0;
 
   while (frontier.length > 0) {
-    await ensureAdjacency(frontier);
+    bfsRound++;
     const next: number[] = [];
     for (const current of frontier) {
-      const neighbors = adjacencyCache.get(current) ?? [];
+      const neighbors = adjacency.get(current) ?? [];
       for (const neighbor of neighbors) {
         if (!visited.has(neighbor)) {
           visited.add(neighbor);
           parents.set(neighbor, current);
           if (neighbor === toSector) {
-            const path = buildPath(neighbor);
-            return {
-              path,
+            // Reconstruct path
+            const path: number[] = [];
+            let cur: number | null | undefined = neighbor;
+            while (cur !== null && cur !== undefined) {
+              path.unshift(cur);
+              cur = parents.get(cur) ?? null;
+            }
+            sBfs.end({
+              rounds: bfsRound,
+              visitedSectors: visited.size,
               distance: path.length - 1,
-            };
+            });
+            return { path, distance: path.length - 1 };
           }
           next.push(neighbor);
         }
@@ -1148,9 +1115,31 @@ export async function findShortestPath(
     frontier = next;
   }
 
+  sBfs.end({ rounds: bfsRound, visitedSectors: visited.size, found: false });
   throw new PathNotFoundError(
     `No path found from sector ${fromSector} to sector ${toSector}`,
   );
+}
+
+/**
+ * Load all sector adjacencies from universe_structure in a single query.
+ * Returns a Map from sector_id to an array of neighbor sector_ids.
+ */
+async function fetchAllAdjacencies(
+  supabase: SupabaseClient,
+): Promise<Map<number, number[]>> {
+  const { data, error } = await supabase
+    .from("universe_structure")
+    .select("sector_id, warps");
+  if (error) {
+    throw new Error(`failed to load universe adjacencies: ${error.message}`);
+  }
+  const map = new Map<number, number[]>();
+  for (const row of data ?? []) {
+    const edges = parseWarpEdges(row.warps);
+    map.set(row.sector_id, edges.map((e) => e.to));
+  }
+  return map;
 }
 
 export async function buildLocalMapRegion(

@@ -34,6 +34,7 @@ import {
   respondWithError,
 } from "../_shared/request.ts";
 import { traced } from "../_shared/weave.ts";
+import type { WeaveSpan } from "../_shared/weave.ts";
 
 class PlotCourseError extends Error {
   status: number;
@@ -46,15 +47,21 @@ class PlotCourseError extends Error {
 }
 
 Deno.serve(traced("plot_course", async (req, trace) => {
+  const sAuth = trace.span("auth_check");
   if (!validateApiToken(req)) {
+    sAuth.end({ error: "unauthorized" });
     return unauthorizedResponse();
   }
+  sAuth.end();
 
   const supabase = createServiceRoleClient();
   let payload: Record<string, unknown>;
+  const sParse = trace.span("parse_request");
   try {
     payload = await parseJsonRequest(req);
+    sParse.end();
   } catch (err) {
+    sParse.end({ error: err instanceof Error ? err.message : String(err) });
     const response = respondWithError(err);
     if (response) {
       return response;
@@ -97,7 +104,7 @@ Deno.serve(traced("plot_course", async (req, trace) => {
   }
 
   try {
-    const sHandlePlotCourse = trace.span("handle_plot_course");
+    const sHandlePlotCourse = trace.span("handle_plot_course", { characterId });
     const result = await handlePlotCourse(
       supabase,
       payload,
@@ -106,6 +113,7 @@ Deno.serve(traced("plot_course", async (req, trace) => {
       adminOverride,
       actorCharacterId,
       taskId,
+      sHandlePlotCourse,
     );
     sHandlePlotCourse.end();
     return result;
@@ -153,12 +161,19 @@ async function handlePlotCourse(
   adminOverride: boolean,
   actorCharacterId: string | null,
   taskId: string | null,
+  ws: WeaveSpan,
 ): Promise<Response> {
   const source = buildEventSource("plot_course", requestId);
 
+  const sLoadChar = ws.span("load_character", { characterId });
   const character = await loadCharacter(supabase, characterId);
-  const ship = await loadShip(supabase, character.current_ship_id);
+  sLoadChar.end({ name: character.name });
 
+  const sLoadShip = ws.span("load_ship", { shipId: character.current_ship_id });
+  const ship = await loadShip(supabase, character.current_ship_id);
+  sLoadShip.end({ sector: ship.current_sector });
+
+  const sAuth = ws.span("actor_authorization");
   await ensureActorAuthorization({
     supabase,
     ship,
@@ -166,6 +181,8 @@ async function handlePlotCourse(
     adminOverride,
     targetCharacterId: characterId,
   });
+  sAuth.end();
+
   if (ship.current_sector === null || ship.current_sector === undefined) {
     throw new PlotCourseError("Ship sector is unavailable", 500);
   }
@@ -185,8 +202,10 @@ async function handlePlotCourse(
   toSector = Math.floor(toSector);
 
   if (!adminOverride && fromSector !== ship.current_sector) {
+    const sMapKnowledge = ws.span("load_map_knowledge", { fromSector });
     const knowledge = await loadMapKnowledge(supabase, characterId);
     const isDiscovered = Boolean(knowledge.sectors_visited[String(fromSector)]);
+    sMapKnowledge.end({ discovered: isDiscovered });
     if (!isDiscovered) {
       throw new PlotCourseError(
         "from_sector must be a sector you or your corporation have discovered",
@@ -195,16 +214,22 @@ async function handlePlotCourse(
     }
   }
 
+  const sValidateDest = ws.span("validate_destination", { toSector });
   const destinationRow = await fetchSectorRow(supabase, toSector);
   if (!destinationRow) {
+    sValidateDest.end({ error: "not found" });
     throw new PlotCourseError(`Invalid to_sector: ${toSector}`, 400);
   }
+  sValidateDest.end();
 
+  const sPathfinding = ws.span("find_shortest_path", { fromSector, toSector });
   const { path, distance } = await findShortestPath(supabase, {
     fromSector,
     toSector,
-  });
+  }, sPathfinding);
+  sPathfinding.end({ distance, pathLength: path.length });
 
+  const sEmitEvent = ws.span("emit_course_plot");
   await emitCharacterEvent({
     supabase,
     characterId,
@@ -221,6 +246,7 @@ async function handlePlotCourse(
     taskId,
     shipId: ship.ship_id,
   });
+  sEmitEvent.end();
 
   return successResponse({
     request_id: requestId,
