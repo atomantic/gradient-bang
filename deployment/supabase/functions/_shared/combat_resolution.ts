@@ -67,6 +67,25 @@ export async function resolveEncounterRound(options: {
     destroyed: outcome.destroyed,
   });
 
+  // A toll demand round results in mutual brace (garrison demands, player
+  // refuses). The engine sees this as stalemate, but the garrison should
+  // escalate to attack in the next round. Clear the stalemate so combat
+  // continues.
+  if (outcome.end_state === "stalemate") {
+    const ctx = encounter.context as Record<string, unknown> | undefined;
+    const tollRegistry = ctx?.toll_registry as
+      | Record<string, unknown>
+      | undefined;
+    if (tollRegistry) {
+      const hasUnpaidToll = Object.values(tollRegistry).some(
+        (e) => !(e as Record<string, unknown>).paid,
+      );
+      if (hasUnpaidToll) {
+        outcome.end_state = null;
+      }
+    }
+  }
+
   // Check for toll satisfaction after resolution
   if (checkTollStanddown(encounter, outcome, combinedActions)) {
     outcome.end_state = "toll_satisfied";

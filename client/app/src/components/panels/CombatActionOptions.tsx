@@ -15,19 +15,19 @@ import { ChevronSM } from "../svg/ChevronSM"
 import { FleeActionLG } from "../svg/FleeActionLG"
 import { ShieldActionLG } from "../svg/ShieldActionLG"
 
+export interface CombatActionSubmission {
+  action: CombatActionType
+  commit?: number
+  target_id?: string | null
+}
+
 export interface CombatActionOptionsProps {
   round: number
-  onSelectedAction: (action: CombatActionType) => void
-  attackCommit: string | null
-  onAttackCommit: (commit: string) => void
-  selectedTargetKey: string
-  onSelectedTargetKey: (key: string) => void
+  onSelectedAction: (details: CombatActionSubmission) => void
   payTollAmount: number
-  onPayToll: () => void
   maxAttackCommit: number
   pendingReceipt: CombatActionReceipt | null
   attackTargets: CombatAttackTargetOption[]
-  selectedAttackTarget: CombatAttackTargetOption | null
   canAttack: boolean
   canBrace: boolean
   canPayToll: boolean
@@ -84,9 +84,7 @@ export const CombatActionOptions = (props: CombatActionOptionsProps) => {
   const [selectedAttackTarget, setSelectedAttackTarget] = useState<CombatAttackTargetOption | null>(
     null
   )
-  const [selectedAttackCommit, setSelectedAttackCommit] = useState<string>(
-    props.attackCommit ?? "1"
-  )
+  const [selectedAttackCommit, setSelectedAttackCommit] = useState<string>("1")
   const [attackCommitError, setAttackCommitError] = useState<string | null>(null)
   const [attackPopoverOpen, setAttackPopoverOpen] = useState(false)
   const [showCards, setShowCards] = useState(true)
@@ -101,13 +99,21 @@ export const CombatActionOptions = (props: CombatActionOptionsProps) => {
 
   const handleSubmitAction = () => {
     if (!actionSelected) return
-    props.onSelectedAction(actionSelected)
+
+    const details: CombatActionSubmission = { action: actionSelected }
+
+    if (actionSelected === "attack") {
+      details.commit = Number.parseInt(selectedAttackCommit, 10) || 0
+      details.target_id = selectedAttackTarget?.id ?? selectedAttackTarget?.name ?? null
+    }
+
+    props.onSelectedAction(details)
 
     // Animate cards out
     setShowCards(false)
     setAttackCommitError(null)
     setSelectedAttackTarget(null)
-    setSelectedAttackCommit("")
+    setSelectedAttackCommit("1")
     setAttackPopoverOpen(false)
   }
 
@@ -222,7 +228,6 @@ export const CombatActionOptions = (props: CombatActionOptionsProps) => {
                           defaultValue={[selectedAttackCommit as unknown as number]}
                           onValueChange={(value) => {
                             setSelectedAttackCommit(value[0].toString())
-                            props.onAttackCommit(value[0].toString())
                           }}
                           className="flex-1"
                         />

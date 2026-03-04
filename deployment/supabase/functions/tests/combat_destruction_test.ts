@@ -527,3 +527,94 @@ Deno.test({
     });
   },
 });
+
+// ============================================================================
+// Group 7: Destroyed ship → escape pod with full fuel → can move
+// ============================================================================
+
+Deno.test({
+  name: "combat_destruction — escape pod has full fuel and can move after combat",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    // P1 (300 fighters) destroys P2 (5 fighters). After combat ends:
+    // - P2's ship is escape_pod with warp_power = 800 (escape_pod definition)
+    // - P2 can move to an adjacent sector (combat is over)
+
+    await t.step("reset and setup", async () => {
+      await resetDatabase([P1, P2]);
+      await apiOk("join", { character_id: p1Id });
+      await apiOk("join", { character_id: p2Id });
+      await setShipSector(p1ShipId, 3);
+      await setShipSector(p2ShipId, 3);
+      await setShipFighters(p1ShipId, 300);
+      await setShipFighters(p2ShipId, 5);
+    });
+
+    await t.step("P1 initiates combat", async () => {
+      await apiOk("combat_initiate", { character_id: p1Id });
+    });
+
+    await t.step("drive combat to completion", async () => {
+      const rounds = await driveCombatToEnd(3, p1Id, p2Id);
+      assert(rounds >= 1, `Expected at least 1 round, got ${rounds}`);
+    });
+
+    await t.step("P2 is escape_pod with full fuel (800 warp_power)", async () => {
+      const ship = await queryShip(p2ShipId);
+      assertExists(ship);
+      assertEquals(ship.ship_type, "escape_pod", "Should be escape_pod");
+      assertEquals(ship.is_escape_pod, true, "is_escape_pod flag should be true");
+      assertEquals(ship.current_fighters, 0, "No fighters");
+      assertEquals(ship.current_shields, 0, "No shields");
+      assertEquals(
+        ship.current_warp_power,
+        800,
+        "Escape pod should have full fuel (800) from ship definition",
+      );
+    });
+
+    await t.step("combat has ended in sector", async () => {
+      const state = await queryCombatState(3);
+      if (state) {
+        assertEquals(
+          (state as Record<string, unknown>).ended,
+          true,
+          "Combat should have ended",
+        );
+      }
+    });
+
+    // P2 (escape pod) should be able to move to adjacent sector.
+    // Sector 3 adjacencies: 1, 4, 7.
+    let cursorP2: number;
+
+    await t.step("capture P2 cursor", async () => {
+      cursorP2 = await getEventCursor(p2Id);
+    });
+
+    await t.step("P2 escape pod moves to sector 1", async () => {
+      const result = await apiOk("move", {
+        character_id: p2Id,
+        to_sector: 1,
+      });
+      assert(result.success, "Escape pod should be able to move");
+    });
+
+    await t.step("P2 receives movement.complete event", async () => {
+      const events = await eventsOfType(p2Id, "movement.complete", cursorP2);
+      assert(events.length >= 1, "Should have movement.complete event");
+    });
+
+    await t.step("P2 ship is now in sector 1", async () => {
+      const ship = await queryShip(p2ShipId);
+      assertExists(ship);
+      assertEquals(ship.current_sector, 1, "Escape pod should be in sector 1");
+      // Fuel decremented by turns_per_warp (escape_pod = 1)
+      assert(
+        (ship.current_warp_power as number) < 800,
+        `Fuel should have decreased from 800, got ${ship.current_warp_power}`,
+      );
+    });
+  },
+});

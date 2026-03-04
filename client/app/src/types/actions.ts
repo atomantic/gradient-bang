@@ -81,6 +81,18 @@ export interface AssignQuestAction {
   payload: { quest_code: string }
 }
 
+export interface CombatActionAction {
+  type: "combat-action"
+  payload: {
+    combat_id: string
+    action: string
+    round: number
+    commit?: number
+    target_id?: string | null
+    to_sector?: number | null
+  }
+}
+
 type ActionMeta = { async?: boolean }
 
 export type GameAction = (
@@ -98,6 +110,7 @@ export type GameAction = (
   | SayTextAction
   | SayTextDimissAction
   | AssignQuestAction
+  | CombatActionAction
 ) &
   ActionMeta
 

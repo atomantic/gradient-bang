@@ -336,6 +336,8 @@ No `.env` file is needed — the test runner creates its own isolated Supabase s
 
 ### Run tests
 
+> **Note:** stop any running supabase instances first `npx supabase stop`
+
 ```bash
 bash deployment/supabase/functions/tests/run_tests.sh
 ```
@@ -538,51 +540,51 @@ pnpm run dev
 
 ### Edge functions (`.env.supabase` / `.env.cloud`)
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `SUPABASE_URL` | Yes | — | Supabase project URL |
-| `SUPABASE_ANON_KEY` | Yes | — | Public Supabase anon JWT key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | — | Service role key (bypasses RLS) |
-| `POSTGRES_POOLER_URL` | Yes | — | PgBouncer pooled Postgres connection string |
-| `EDGE_API_TOKEN` | Yes | — | Token for authenticating internal requests via `X-API-Token` header. When unset, token validation is skipped (local dev) |
-| `BOT_START_URL` | No | `http://host.docker.internal:7860/start` | URL of the bot's `/start` endpoint for creating voice chat sessions |
-| `BOT_START_API_KEY` | No | — | Bearer token for authenticating requests to the bot start endpoint |
-| `MOVE_DELAY_SCALE` | No | `1.0` | Multiplier to scale movement delays (set to `0.25` for faster local dev) |
-| `MOVE_DELAY_SECONDS_PER_TURN` | No | `0.667` | Base movement delay in seconds per warp turn |
-| `COMBAT_TICK_BATCH_SIZE` | No | `20` | Max combat encounters processed per tick |
-| `COMBAT_ROUND_TIMEOUT` | No | `30` | Seconds before a combat round auto-resolves |
-| `SHIELD_REGEN_PER_ROUND` | No | `10` | Shields regenerated per combat round |
-| `SALVAGE_TTL_SECONDS` | No | `900` | TTL for salvage debris (seconds) |
-| `EDGE_ADMIN_PASSWORD` | No | — | Admin password for admin-only endpoints |
-| `EDGE_ADMIN_PASSWORD_HASH` | No | — | SHA-256 hash of admin password (alternative to plaintext) |
+| Variable                      | Required | Default                                  | Description                                                                                                              |
+| ----------------------------- | -------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `SUPABASE_URL`                | Yes      | —                                        | Supabase project URL                                                                                                     |
+| `SUPABASE_ANON_KEY`           | Yes      | —                                        | Public Supabase anon JWT key                                                                                             |
+| `SUPABASE_SERVICE_ROLE_KEY`   | Yes      | —                                        | Service role key (bypasses RLS)                                                                                          |
+| `POSTGRES_POOLER_URL`         | Yes      | —                                        | PgBouncer pooled Postgres connection string                                                                              |
+| `EDGE_API_TOKEN`              | Yes      | —                                        | Token for authenticating internal requests via `X-API-Token` header. When unset, token validation is skipped (local dev) |
+| `BOT_START_URL`               | No       | `http://host.docker.internal:7860/start` | URL of the bot's `/start` endpoint for creating voice chat sessions                                                      |
+| `BOT_START_API_KEY`           | No       | —                                        | Bearer token for authenticating requests to the bot start endpoint                                                       |
+| `MOVE_DELAY_SCALE`            | No       | `1.0`                                    | Multiplier to scale movement delays (set to `0.25` for faster local dev)                                                 |
+| `MOVE_DELAY_SECONDS_PER_TURN` | No       | `0.667`                                  | Base movement delay in seconds per warp turn                                                                             |
+| `COMBAT_TICK_BATCH_SIZE`      | No       | `20`                                     | Max combat encounters processed per tick                                                                                 |
+| `COMBAT_ROUND_TIMEOUT`        | No       | `30`                                     | Seconds before a combat round auto-resolves                                                                              |
+| `SHIELD_REGEN_PER_ROUND`      | No       | `10`                                     | Shields regenerated per combat round                                                                                     |
+| `SALVAGE_TTL_SECONDS`         | No       | `900`                                    | TTL for salvage debris (seconds)                                                                                         |
+| `EDGE_ADMIN_PASSWORD`         | No       | —                                        | Admin password for admin-only endpoints                                                                                  |
+| `EDGE_ADMIN_PASSWORD_HASH`    | No       | —                                        | SHA-256 hash of admin password (alternative to plaintext)                                                                |
 
 ### Bot (`.env.bot`)
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DEEPGRAM_API_KEY` | Yes | — | [Deepgram](https://console.deepgram.com) API key for speech-to-text |
-| `CARTESIA_API_KEY` | Yes | — | [Cartesia](https://play.cartesia.ai) API key for text-to-speech |
-| `GOOGLE_API_KEY` | Yes | — | [Google AI Studio](https://aistudio.google.com/apikey) key for Gemini LLM |
-| `ANTHROPIC_API_KEY` | No | — | [Anthropic](https://console.anthropic.com) key for Claude LLM (task agent) |
-| `SUPABASE_URL` | Yes | — | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | — | Service role key for DB access |
-| `EDGE_API_TOKEN` | Yes | — | Token for authenticating edge function calls |
-| `DAILY_API_KEY` | No | — | [Daily](https://www.daily.co/) API key (required for Daily transport) |
-| `LOCAL_API_POSTGRES_URL` | No | — | Session pooler connection string to run edge functions locally inside the bot, bypassing Supabase network overhead |
-| `BOT_USE_KRISP` | No | `0` | Enable Krisp noise cancellation (`1` for production, `0` for local dev) |
-| `BOT_TEST_CHARACTER_ID` | No | — | Hardcoded character ID for testing |
-| `BOT_TEST_CHARACTER_NAME` | No | — | Hardcoded character name for testing |
-| `BOT_TEST_NPC_CHARACTER_NAME` | No | — | Hardcoded NPC name for testing |
-| `VOICE_LLM_PROVIDER` | Yes | — | Voice LLM provider (`google`, `anthropic`, `openai`) |
-| `VOICE_LLM_MODEL` | Yes | — | Voice LLM model name |
-| `TASK_LLM_PROVIDER` | Yes | — | Task agent LLM provider |
-| `TASK_LLM_MODEL` | Yes | — | Task agent LLM model name |
-| `TASK_LLM_THINKING_BUDGET` | No | — | Token budget for task agent extended thinking |
-| `UI_AGENT_LLM_PROVIDER` | Yes | — | UI agent LLM provider |
-| `UI_AGENT_LLM_MODEL` | Yes | — | UI agent LLM model name |
-| `UI_AGENT_LLM_THINKING_BUDGET` | No | — | Token budget for UI agent thinking |
-| `UI_AGENT_SHIPS_CACHE_TTL_SECS` | No | `60` | Ships list cache TTL for UI agent (seconds) |
-| `TOKEN_USAGE_LOG` | No | `logs/token_usage.csv` | Path for token usage metrics CSV |
+| Variable                        | Required | Default                | Description                                                                                                        |
+| ------------------------------- | -------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `DEEPGRAM_API_KEY`              | Yes      | —                      | [Deepgram](https://console.deepgram.com) API key for speech-to-text                                                |
+| `CARTESIA_API_KEY`              | Yes      | —                      | [Cartesia](https://play.cartesia.ai) API key for text-to-speech                                                    |
+| `GOOGLE_API_KEY`                | Yes      | —                      | [Google AI Studio](https://aistudio.google.com/apikey) key for Gemini LLM                                          |
+| `ANTHROPIC_API_KEY`             | No       | —                      | [Anthropic](https://console.anthropic.com) key for Claude LLM (task agent)                                         |
+| `SUPABASE_URL`                  | Yes      | —                      | Supabase project URL                                                                                               |
+| `SUPABASE_SERVICE_ROLE_KEY`     | Yes      | —                      | Service role key for DB access                                                                                     |
+| `EDGE_API_TOKEN`                | Yes      | —                      | Token for authenticating edge function calls                                                                       |
+| `DAILY_API_KEY`                 | No       | —                      | [Daily](https://www.daily.co/) API key (required for Daily transport)                                              |
+| `LOCAL_API_POSTGRES_URL`        | No       | —                      | Session pooler connection string to run edge functions locally inside the bot, bypassing Supabase network overhead |
+| `BOT_USE_KRISP`                 | No       | `0`                    | Enable Krisp noise cancellation (`1` for production, `0` for local dev)                                            |
+| `BOT_TEST_CHARACTER_ID`         | No       | —                      | Hardcoded character ID for testing                                                                                 |
+| `BOT_TEST_CHARACTER_NAME`       | No       | —                      | Hardcoded character name for testing                                                                               |
+| `BOT_TEST_NPC_CHARACTER_NAME`   | No       | —                      | Hardcoded NPC name for testing                                                                                     |
+| `VOICE_LLM_PROVIDER`            | Yes      | —                      | Voice LLM provider (`google`, `anthropic`, `openai`)                                                               |
+| `VOICE_LLM_MODEL`               | Yes      | —                      | Voice LLM model name                                                                                               |
+| `TASK_LLM_PROVIDER`             | Yes      | —                      | Task agent LLM provider                                                                                            |
+| `TASK_LLM_MODEL`                | Yes      | —                      | Task agent LLM model name                                                                                          |
+| `TASK_LLM_THINKING_BUDGET`      | No       | —                      | Token budget for task agent extended thinking                                                                      |
+| `UI_AGENT_LLM_PROVIDER`         | Yes      | —                      | UI agent LLM provider                                                                                              |
+| `UI_AGENT_LLM_MODEL`            | Yes      | —                      | UI agent LLM model name                                                                                            |
+| `UI_AGENT_LLM_THINKING_BUDGET`  | No       | —                      | Token budget for UI agent thinking                                                                                 |
+| `UI_AGENT_SHIPS_CACHE_TTL_SECS` | No       | `60`                   | Ships list cache TTL for UI agent (seconds)                                                                        |
+| `TOKEN_USAGE_LOG`               | No       | `logs/token_usage.csv` | Path for token usage metrics CSV                                                                                   |
 
 ---
 
@@ -600,16 +602,16 @@ pnpm run dev
 
 This project includes a set of [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skills (slash commands) that automate common development and testing workflows. Run them inside Claude Code with `/skill-name`.
 
-| Skill | Description | Arguments |
-|-------|-------------|-----------|
-| `/init` | Full project setup from a fresh clone. Installs deps, starts Supabase, creates env files, generates world data, and prompts for API keys. | None — interactive prompts for API keys |
-| `/migrate` | Applies pending Supabase database migrations. Reviews SQL before applying, never resets or drops data. | `local` or `production` (prompted) |
-| `/reset-world` | Resets game database, generates a fresh universe, loads quests, and seeds combat cron config. | Environment (`local`/`cloud`), sector count (default `5000`), seed (optional) |
-| `/load-quests` | Loads quest definitions from `quest-data/` JSON files into Supabase. | Mode (`upsert`/`force`), dry run (yes/no) |
-| `/character-create` | Creates a new game character via the `user_character_create` edge function. | Email, password, character name (all prompted) |
-| `/npc <name>` | Runs an autonomous AI task agent as a game character in the background. | Character name (arg or prompted), task description (prompted) |
-| `/combat <target>` | Initiates a combat encounter for testing. Shows sector context before starting. | Character name or ship UUID |
-| `/destroy-ship` | Destroys a ship for testing — soft-delete, event emission, pseudo-character cleanup. | Ship UUID (prompted) |
-| `/restore-ship` | Restores a destroyed ship to full health — clears destroyed flag, restocks stats, recreates pseudo-character. | Ship UUID (prompted) |
-| `/deploy-functions` | Deploys all Supabase edge functions. | Environment (`production`/`local`) |
-| `/deploy-bot` | Builds the bot Docker image, pushes to registry, and optionally deploys to Pipecat Cloud. | Image tag (from `pcc-deploy.toml` or custom), platform (`linux/arm64` default) |
+| Skill               | Description                                                                                                                               | Arguments                                                                      |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `/init`             | Full project setup from a fresh clone. Installs deps, starts Supabase, creates env files, generates world data, and prompts for API keys. | None — interactive prompts for API keys                                        |
+| `/migrate`          | Applies pending Supabase database migrations. Reviews SQL before applying, never resets or drops data.                                    | `local` or `production` (prompted)                                             |
+| `/reset-world`      | Resets game database, generates a fresh universe, loads quests, and seeds combat cron config.                                             | Environment (`local`/`cloud`), sector count (default `5000`), seed (optional)  |
+| `/load-quests`      | Loads quest definitions from `quest-data/` JSON files into Supabase.                                                                      | Mode (`upsert`/`force`), dry run (yes/no)                                      |
+| `/character-create` | Creates a new game character via the `user_character_create` edge function.                                                               | Email, password, character name (all prompted)                                 |
+| `/npc <name>`       | Runs an autonomous AI task agent as a game character in the background.                                                                   | Character name (arg or prompted), task description (prompted)                  |
+| `/combat <target>`  | Initiates a combat encounter for testing. Shows sector context before starting.                                                           | Character name or ship UUID                                                    |
+| `/destroy-ship`     | Destroys a ship for testing — soft-delete, event emission, pseudo-character cleanup.                                                      | Ship UUID (prompted)                                                           |
+| `/restore-ship`     | Restores a destroyed ship to full health — clears destroyed flag, restocks stats, recreates pseudo-character.                             | Ship UUID (prompted)                                                           |
+| `/deploy-functions` | Deploys all Supabase edge functions.                                                                                                      | Environment (`production`/`local`)                                             |
+| `/deploy-bot`       | Builds the bot Docker image, pushes to registry, and optionally deploys to Pipecat Cloud.                                                 | Image tag (from `pcc-deploy.toml` or custom), platform (`linux/arm64` default) |
