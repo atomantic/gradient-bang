@@ -100,6 +100,9 @@ const PINNED_SECTORS: Record<string, number> = {
   // Quest tests: sector 0
   test_quest_p1: 0,
   test_quest_p2: 0,
+  // Quest completion tests: sector 0 (mega-port)
+  test_qc_p1: 0,
+  test_qc_p2: 0,
   // Exploration tests: all in sector 0 (mega-port for corp creation)
   test_explore_p1: 0,
   test_explore_p2: 0,

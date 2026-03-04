@@ -3,7 +3,10 @@ import { useCallback, useMemo, useState } from "react"
 import { BlankSlateTile } from "@/components/BlankSlates"
 import { CombatActionTimeline } from "@/components/CombatActionTimeline"
 import { CombatRoundTimer } from "@/components/CombatRoundTimer"
-import { CombatActionOptions } from "@/components/panels/CombatActionOptions"
+import {
+  CombatActionOptions,
+  type CombatActionSubmission,
+} from "@/components/panels/CombatActionOptions"
 import {
   CombatRoundFighterResults,
   CombatRoundShieldResults,
@@ -18,31 +21,25 @@ import { getShipLogoImage } from "@/utils/images"
 
 // -- Action validation -------------------------------------------------------
 
-type ActionValidationContext = {
-  canAttack: boolean
-  canBrace: boolean
-  canPayToll: boolean
-  attackCommit: string
-  selectedAttackTarget: CombatAttackTargetOption | null
-}
-
-function validateAction(action: CombatActionType, ctx: ActionValidationContext): string | null {
-  if (action === "attack" && !ctx.canAttack) {
+function validateAction(
+  details: CombatActionSubmission,
+  ctx: { canAttack: boolean; canBrace: boolean; canPayToll: boolean }
+): string | null {
+  if (details.action === "attack" && !ctx.canAttack) {
     return "Attack unavailable: no fighters remaining"
   }
-  if (action === "brace" && !ctx.canBrace) {
+  if (details.action === "brace" && !ctx.canBrace) {
     return "Brace unavailable: no shields remaining"
   }
-  if (action === "attack") {
-    const commit = ctx.attackCommit ? Number.parseInt(ctx.attackCommit, 10) : 0
-    if (!Number.isFinite(commit) || commit <= 0) {
+  if (details.action === "attack") {
+    if (!details.commit || details.commit <= 0) {
       return "Attack commit must be greater than 0"
     }
-    if (!ctx.selectedAttackTarget) {
+    if (!details.target_id) {
       return "No valid target available for attack"
     }
   }
-  if (action === "pay" && !ctx.canPayToll) {
+  if (details.action === "pay" && !ctx.canPayToll) {
     return "Pay is unavailable for this round"
   }
   return null
@@ -51,14 +48,12 @@ function validateAction(action: CombatActionType, ctx: ActionValidationContext):
 // -- Component ---------------------------------------------------------------
 
 export const CombatActionPanel = () => {
-  const { sendUserTextInput } = useGameContext()
+  const { dispatchAction } = useGameContext()
 
   const ship = useGameStore((state) => state.ship)
   const activeCombatSession = useGameStore((state) => state.activeCombatSession)
   const combatActionReceipts = useGameStore((state) => state.combatActionReceipts)
 
-  const [attackCommit, setAttackCommit] = useState<string>("1")
-  const [selectedTargetKey, setSelectedTargetKey] = useState<string>("")
   const [error, setError] = useState<string | null>(null)
 
   // -- Derived combat data (custom hooks) --
@@ -80,9 +75,6 @@ export const CombatActionPanel = () => {
       ) ?? null
     )
   }, [activeCombatSession, combatActionReceipts])
-
-  const selectedAttackTarget =
-    attackTargets.find((t) => t.key === selectedTargetKey) ?? attackTargets[0] ?? null
 
   const currentFighters =
     typeof latestPersonalResult?.fightersRemaining === "number" ?
@@ -106,17 +98,11 @@ export const CombatActionPanel = () => {
 
   // -- Callbacks (stable references) --
 
-  const handleSubmitAction = useCallback(
-    (selectedAction: CombatActionType) => {
+  const handleSelectedAction = useCallback(
+    (details: CombatActionSubmission) => {
       if (!activeCombatSession) return
 
-      const validationError = validateAction(selectedAction, {
-        canAttack,
-        canBrace,
-        canPayToll,
-        attackCommit,
-        selectedAttackTarget,
-      })
+      const validationError = validateAction(details, { canAttack, canBrace, canPayToll })
 
       if (validationError) {
         setError(validationError)
@@ -125,53 +111,33 @@ export const CombatActionPanel = () => {
 
       setError(null)
 
-      const commit = attackCommit ? Number.parseInt(attackCommit, 10) : 0
-      const selectedTargetId = selectedAttackTarget?.id ?? selectedAttackTarget?.name ?? null
-
-      let actionDetail = ""
-      if (selectedAction === "attack") {
-        actionDetail = `attack with commit ${commit}${selectedTargetId ? ` targeting ${selectedTargetId}` : ""}`
-      } else if (selectedAction === "flee") {
-        const adjacent = useGameStore.getState().sector?.adjacent_sectors ?? []
-        const toSector = adjacent.length > 0 ? adjacent[Math.floor(Math.random() * adjacent.length)] : null
-        actionDetail = toSector != null ? `flee to sector ${toSector}` : "flee"
-      } else {
-        actionDetail = selectedAction
+      const payload: {
+        combat_id: string
+        action: string
+        round: number
+        commit?: number
+        target_id?: string | null
+        to_sector?: number | null
+      } = {
+        combat_id: activeCombatSession.combat_id,
+        action: details.action,
+        round: activeCombatSession.round,
       }
 
-      const prompt = `In combat ${activeCombatSession.combat_id}, round ${activeCombatSession.round}, submit action ${actionDetail}.`
+      if (details.action === "attack") {
+        payload.commit = details.commit
+        if (details.target_id) payload.target_id = details.target_id
+      } else if (details.action === "flee") {
+        const adjacent = useGameStore.getState().sector?.adjacent_sectors ?? []
+        const toSector =
+          adjacent.length > 0 ? adjacent[Math.floor(Math.random() * adjacent.length)] : null
+        if (toSector != null) payload.to_sector = toSector
+      }
 
-      sendUserTextInput(prompt)
+      dispatchAction({ type: "combat-action", payload })
     },
-    [
-      activeCombatSession,
-      attackCommit,
-      canAttack,
-      canBrace,
-      canPayToll,
-      selectedAttackTarget,
-      sendUserTextInput,
-    ]
+    [activeCombatSession, canAttack, canBrace, canPayToll, dispatchAction]
   )
-
-  const handleAttackCommit = useCallback((commit: string) => {
-    setAttackCommit(commit)
-  }, [])
-
-  const handleSelectedTargetKey = useCallback((key: string) => {
-    setSelectedTargetKey(key)
-  }, [])
-
-  const handleSelectedAction = useCallback(
-    (action: CombatActionType) => {
-      handleSubmitAction(action)
-    },
-    [handleSubmitAction]
-  )
-
-  const handlePayToll = useCallback(() => {
-    handleSubmitAction("pay")
-  }, [handleSubmitAction])
 
   // -- Render --
 
@@ -221,20 +187,14 @@ export const CombatActionPanel = () => {
       <section className="flex flex-col gap-ui-sm">
         <CombatActionOptions
           round={activeCombatSession.round}
-          attackCommit={attackCommit}
-          selectedTargetKey={selectedTargetKey}
           payTollAmount={payTollAmount ?? 0}
           pendingReceipt={pendingReceipt}
           attackTargets={attackTargets}
-          selectedAttackTarget={selectedAttackTarget}
           maxAttackCommit={currentFighters}
           canAttack={canAttack}
           canBrace={canBrace}
           canPayToll={canPayToll}
-          onAttackCommit={handleAttackCommit}
-          onSelectedTargetKey={handleSelectedTargetKey}
           onSelectedAction={handleSelectedAction}
-          onPayToll={handlePayToll}
           receipt={pendingReceipt}
           error={error}
         />

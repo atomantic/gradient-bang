@@ -790,15 +790,21 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
             return
 
         if msg_type == "combat-action":
-            await task_manager.game_client.combat_action(
-                character_id=task_manager.character_id,
-                combat_id=msg_data.get("combat_id"),
-                action=msg_data.get("action"),
-                commit=msg_data.get("commit"),
-                round_number=msg_data.get("round"),
-                target_id=msg_data.get("target_id"),
-                to_sector=msg_data.get("to_sector"),
-            )
+            try:
+                await task_manager.game_client.combat_action(
+                    character_id=task_manager.character_id,
+                    combat_id=msg_data.get("combat_id"),
+                    action=msg_data.get("action"),
+                    commit=msg_data.get("commit", 0) or 0,
+                    round_number=msg_data.get("round"),
+                    target_id=msg_data.get("target_id"),
+                    to_sector=msg_data.get("to_sector"),
+                )
+            except Exception as exc:
+                logger.error(f"combat-action failed: {exc}")
+                await rtvi.send_server_message(
+                    {"frame_type": "error", "error": str(exc)}
+                )
             return
 
         # Handle say-text: generate TTS with an optional temporary voice

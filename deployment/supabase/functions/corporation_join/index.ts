@@ -196,6 +196,7 @@ async function handleJoin(params: {
     eventType: "corporation.member_joined",
     payload: eventPayload,
     requestId,
+    actorCharacterId: characterId,
     taskId,
   });
 
