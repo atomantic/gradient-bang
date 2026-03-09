@@ -1,5 +1,6 @@
 import { FunctionCallContent } from "@/components/conversation/FunctionCallContent"
 import { MessageContent } from "@/components/conversation/MessageContent"
+import { UiContent } from "@/components/conversation/UiContent"
 import { cn } from "@/utils/tailwind"
 
 import type {
@@ -58,6 +59,14 @@ export const MessageContainer = ({
   botOutputRenderers,
   aggregationMetadata,
 }: Props) => {
+  if (message.role === "ui") {
+    return (
+      <div className={cn("flex flex-col gap-2")}>
+        <UiContent message={message} />
+      </div>
+    )
+  }
+
   if (message.role === "function_call" && message.functionCall) {
     return (
       <div className={cn("flex flex-col gap-2")}>

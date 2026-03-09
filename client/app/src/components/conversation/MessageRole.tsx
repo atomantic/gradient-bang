@@ -30,7 +30,7 @@ interface Props {
   /**
    * The role of the message
    */
-  role: "user" | "assistant" | "system" | "function_call"
+  role: "user" | "assistant" | "system" | "function_call" | "ui"
 }
 
 /**
@@ -61,6 +61,7 @@ export const MessageRole = ({
       assistant: assistantLabel,
       system: systemLabel,
       function_call: functionCallLabel,
+      ui: "UI Subagent",
     }),
     [assistantLabel, clientLabel, systemLabel, functionCallLabel]
   )

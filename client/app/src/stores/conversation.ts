@@ -25,7 +25,7 @@ interface ConversationState {
   finalizeLastMessage: (role: "user" | "assistant") => void
   removeEmptyLastMessage: (role: "user" | "assistant") => void
   injectMessage: (message: {
-    role: "user" | "assistant" | "system"
+    role: "user" | "assistant" | "system" | "ui"
     parts: ConversationMessagePart[]
   }) => void
   upsertUserTranscript: (text: string | React.ReactNode, final: boolean) => void
@@ -135,6 +135,7 @@ export const mergeMessages = (messages: ConversationMessage[]): ConversationMess
       lastMerged.role === currentMessage.role &&
       currentMessage.role !== "system" &&
       currentMessage.role !== "function_call" &&
+      currentMessage.role !== "ui" &&
       timeDiff < 30000
 
     if (shouldMerge) {

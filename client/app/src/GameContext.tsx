@@ -1472,8 +1472,10 @@ export function GameProvider({ children }: GameProviderProps) {
 
             case "ui-action": {
               const uiPayload = e.payload as Record<string, unknown>
+              console.log("pew", uiPayload)
               if (uiPayload?.["ui-action"] === "control_ui") {
                 console.debug("[GAME EVENT] UI action control_ui", uiPayload)
+
                 // Panel toggling is UI-level, handle in UISlice
                 if (typeof uiPayload.show_panel === "string") {
                   useGameStore
@@ -1514,6 +1516,31 @@ export function GameProvider({ children }: GameProviderProps) {
                       )
                     : undefined,
                   clearCoursePlot: uiPayload.clear_course_plot === true,
+                })
+              }
+
+              // Inject sub-agent message into the conversation panel
+              if (typeof uiPayload.show_panel === "string") {
+                useConversationStore.getState().injectMessage({
+                  role: "ui",
+                  parts: [
+                    {
+                      text: "Show Panel(" + (uiPayload.show_panel as UIMode | "default") + ")",
+                      final: true,
+                      createdAt: new Date().toISOString(),
+                    },
+                  ],
+                })
+              } else {
+                useConversationStore.getState().injectMessage({
+                  role: "ui",
+                  parts: [
+                    {
+                      text: "Map Action",
+                      final: true,
+                      createdAt: new Date().toISOString(),
+                    },
+                  ],
                 })
               }
               break

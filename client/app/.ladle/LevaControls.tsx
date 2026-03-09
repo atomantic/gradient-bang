@@ -138,6 +138,19 @@ export const LevaControls = ({
             ],
           })
         }),
+        ["Add UI Subagent Message"]: button(() => {
+          useConversationStore.getState().addMessage({
+            role: "ui",
+            parts: [
+              {
+                text: "This is a UI Subagent message",
+                final: true,
+                aggregatedBy: "ui_subagent",
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          })
+        }),
         ["Set LLM Is Working"]: button(() => {
           useConversationStore.getState().setIsThinking(true)
         }),

@@ -84,7 +84,7 @@ export const FunctionCallContent: React.FC<FunctionCallContentProps> = ({
             <WrenchIcon weight="fill" size={11} className="size-2.75" />
             <span>{functionCallLabel}</span>
             {functionCall.function_name && (
-              <span className="font-bold text-medium">({functionCall.function_name})</span>
+              <span className="font-base">({functionCall.function_name})</span>
             )}
             {hasDetails && (
               <CaretRightIcon

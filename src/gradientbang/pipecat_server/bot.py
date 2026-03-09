@@ -10,12 +10,9 @@ from pipecat.frames.frames import (
     BotSpeakingFrame,
     EndFrame,
     InterruptionFrame,
-    LLMContextFrame,
-    LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMMessagesAppendFrame,
     LLMRunFrame,
-    LLMTextFrame,
     StartFrame,
     StopFrame,
     TranscriptionFrame,
@@ -512,29 +509,13 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
             except Exception as exc:
                 logger.error(f"Local API server stop failed: {exc}")
 
-    # Patch RTVI observer to ignore LLM frames from UI branch sources.
-    # This prevents UI agent inference from leaking bot-llm-text, user-llm-text,
-    # bot-llm-started, bot-llm-stopped RTVI messages to the client.
-    # Note: Uses a closure (not default kwargs) so inspect.signature sees exactly
-    # 1 parameter — matching the expected on_push_frame(data) convention that
-    # TaskObserver._proxy_task_handler checks.
-    _LLM_FRAME_TYPES = (
-        LLMTextFrame,
-        LLMContextFrame,
-        LLMFullResponseStartFrame,
-        LLMFullResponseEndFrame,
-    )
+    # Tell the RTVI observer to ignore all frames from UI branch processors.
+    # This prevents UI agent inference from leaking LLM text, context, and
+    # function call RTVI messages to the client.
     for obs in task._observer._observers:
         if isinstance(obs, RTVIObserver):
-            _orig_rtvi_on_push = obs.on_push_frame
-
-            async def _filtered_rtvi_on_push(data):
-                if data.source in ui_branch_sources and isinstance(data.frame, _LLM_FRAME_TYPES):
-                    return
-                await _orig_rtvi_on_push(data)
-
-            obs.on_push_frame = _filtered_rtvi_on_push
-            logger.info("Installed source-based LLM frame filter on RTVI observer")
+            obs._ignored_sources = ui_branch_sources
+            logger.info("Set RTVI observer ignored_sources to UI branch processors")
             break
 
     @task.rtvi.event_handler("on_client_ready")
