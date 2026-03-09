@@ -77,7 +77,7 @@ export interface ConversationMessagePart {
 }
 
 export interface ConversationMessage {
-  role: "user" | "assistant" | "system" | "function_call"
+  role: "user" | "assistant" | "system" | "function_call" | "ui"
   final?: boolean
   parts: ConversationMessagePart[]
   createdAt: string

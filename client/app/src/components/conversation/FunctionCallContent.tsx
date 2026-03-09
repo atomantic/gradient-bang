@@ -1,6 +1,12 @@
 import { useState } from "react"
 
-import { ArrowRightIcon, CheckIcon, CircleNotchIcon, XIcon } from "@phosphor-icons/react"
+import {
+  CaretRightIcon,
+  CheckIcon,
+  CircleNotchIcon,
+  WrenchIcon,
+  XIcon,
+} from "@phosphor-icons/react"
 
 import {
   Collapsible,
@@ -9,10 +15,14 @@ import {
 } from "@/components/primitives/Collapsible"
 import { cn } from "@/utils/tailwind"
 
+import { MessageTimestamp } from "./MessageTimestamp"
+
 import type { FunctionCallData, FunctionCallRenderer } from "@/types/conversation"
 
 interface FunctionCallContentProps {
   functionCall: FunctionCallData
+  /** Timestamp for the function call message */
+  createdAt?: string | number
   /** Label for function call entries */
   functionCallLabel?: string
   /** Custom renderer for function call messages. When provided, replaces the default rendering. */
@@ -32,14 +42,15 @@ const StatusIcon: React.FC<{
   switch (status) {
     case "started":
     case "in_progress":
-      return <CircleNotchIcon size={14} className="animate-spin" />
+      return <CircleNotchIcon size={12} className="animate-spin" weight="bold" />
     case "completed":
-      return <CheckIcon size={14} className="text-green-600" />
+      return <CheckIcon size={12} className="text-success" weight="bold" />
   }
 }
 
 export const FunctionCallContent: React.FC<FunctionCallContentProps> = ({
   functionCall,
+  createdAt,
   functionCallLabel = "Function call",
   functionCallRenderer,
   classNames = {},
@@ -60,23 +71,27 @@ export const FunctionCallContent: React.FC<FunctionCallContentProps> = ({
         <CollapsibleTrigger asChild disabled={!hasDetails}>
           <button
             className={cn(
-              "flex items-center gap-2 text-xs font-mono",
-              "text-muted-foreground transition-colors",
+              "w-fit text-subtle-foreground font-extrabold text-xxs uppercase inline-flex gap-1 items-center",
+              "transition-colors select-none",
               hasDetails && "hover:text-foreground cursor-pointer",
-              !hasDetails && "cursor-default",
-              "select-none"
+              !hasDetails && "cursor-default"
             )}
           >
-            {hasDetails && (
-              <ArrowRightIcon
-                size={14}
-                className={cn("transition-transform duration-200", isOpen && "rotate-90")}
-              />
+            {createdAt && (
+              <MessageTimestamp createdAt={createdAt} className="text-accent-foreground" />
             )}
             <StatusIcon status={functionCall.status} cancelled={functionCall.cancelled} />
-            <span className="font-semibold">{functionCallLabel}</span>
+            <WrenchIcon weight="fill" size={11} className="size-2.75" />
+            <span>{functionCallLabel}</span>
             {functionCall.function_name && (
-              <span className="text-muted-foreground">({functionCall.function_name})</span>
+              <span className="font-base">({functionCall.function_name})</span>
+            )}
+            {hasDetails && (
+              <CaretRightIcon
+                size={11}
+                weight="bold"
+                className={cn("transition-transform duration-200", isOpen && "rotate-90")}
+              />
             )}
           </button>
         </CollapsibleTrigger>
@@ -85,14 +100,16 @@ export const FunctionCallContent: React.FC<FunctionCallContentProps> = ({
           <CollapsibleContent>
             <div
               className={cn(
-                "pl-3 border-l-2 border-muted text-xs font-mono",
+                "pl-3 ml-0! border-l-2 border-accent text-xxs",
                 "flex flex-col gap-2 mt-1",
                 hasDetails && "ml-3.5"
               )}
             >
               {functionCall.args && Object.keys(functionCall.args).length > 0 && (
                 <div>
-                  <div className="font-semibold text-muted-foreground mb-1">Arguments</div>
+                  <div className="font-semibold text-accent-foreground mb-1 uppercase">
+                    Arguments
+                  </div>
                   <pre className="bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all">
                     {JSON.stringify(functionCall.args, null, 2)}
                   </pre>
@@ -101,7 +118,7 @@ export const FunctionCallContent: React.FC<FunctionCallContentProps> = ({
 
               {functionCall.result !== undefined && (
                 <div>
-                  <div className="font-semibold text-muted-foreground mb-1">Result</div>
+                  <div className="font-semibold text-accent-foreground mb-1 uppercase">Result</div>
                   <pre className="bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all">
                     {typeof functionCall.result === "string" ?
                       functionCall.result

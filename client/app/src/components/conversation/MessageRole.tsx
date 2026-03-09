@@ -30,7 +30,7 @@ interface Props {
   /**
    * The role of the message
    */
-  role: "user" | "assistant" | "system" | "function_call"
+  role: "user" | "assistant" | "system" | "function_call" | "ui"
 }
 
 /**
@@ -61,23 +61,10 @@ export const MessageRole = ({
       assistant: assistantLabel,
       system: systemLabel,
       function_call: functionCallLabel,
+      ui: "UI Subagent",
     }),
     [assistantLabel, clientLabel, systemLabel, functionCallLabel]
   )
 
-  return (
-    <div
-      className={cn(
-        "font-semibold font-mono text-xs leading-6 w-max",
-        {
-          "text-client": role === "user",
-          "text-agent": role === "assistant",
-          "text-subtle": role === "system" || role === "function_call",
-        },
-        className
-      )}
-    >
-      {roleLabelMap[role] || role}
-    </div>
-  )
+  return <div className={cn("w-max", className)}>{roleLabelMap[role] || role}</div>
 }

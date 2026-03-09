@@ -4,6 +4,7 @@ import { button, buttonGroup, folder, Leva, useControls } from "leva"
 import { faker } from "@faker-js/faker"
 import { PipecatClient } from "@pipecat-ai/client-js"
 
+import { useConversationStore } from "@/stores/conversation"
 import useGameStore from "@/stores/game"
 
 import { useCombatControls } from "./combat/useCombatControls"
@@ -15,7 +16,6 @@ import { useLeaderboardControls } from ".ladle/useLeaderboardControls"
 import { useQuestControls } from ".ladle/useQuestControls"
 
 import { SHIP_DEFINITIONS } from "@/types/ships"
-import { INCOMING_CHAT_TOOL_CALL_MOCK } from "@/mocks/chat.mock"
 import {
   createRandomCorporation,
   createRandomPlayer,
@@ -40,7 +40,6 @@ export const LevaControls = ({
   const dispatchAction = useGameStore.use.dispatchAction()
   const addToast = useGameStore.use.addToast()
   const setSector = useGameStore.use.setSector()
-  const addChatMessage = useGameStore.use.addChatMessage()
   const addSectorPlayer = useGameStore.use.addSectorPlayer()
   const removeSectorPlayer = useGameStore.use.removeSectorPlayer()
   const addActivityLogEntry = useGameStore.use.addActivityLogEntry()
@@ -128,7 +127,7 @@ export const LevaControls = ({
     Conversation: folder(
       {
         ["Add System Message"]: button(() => {
-          addChatMessage({
+          useConversationStore.getState().addMessage({
             role: "system",
             parts: [
               {
@@ -139,17 +138,24 @@ export const LevaControls = ({
             ],
           })
         }),
-        ["Add Incoming Tool Call"]: button(() => {
-          const state = useGameStore.getState()
-          state.addToolCallMessage(INCOMING_CHAT_TOOL_CALL_MOCK.name)
+        ["Add UI Subagent Message"]: button(() => {
+          useConversationStore.getState().addMessage({
+            role: "ui",
+            parts: [
+              {
+                text: "This is a UI Subagent message",
+                final: true,
+                aggregatedBy: "ui_subagent",
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          })
         }),
         ["Set LLM Is Working"]: button(() => {
-          const state = useGameStore.getState()
-          state.setLLMIsWorking(true)
+          useConversationStore.getState().setIsThinking(true)
         }),
         ["Set LLM Is Not Working"]: button(() => {
-          const state = useGameStore.getState()
-          state.setLLMIsWorking(false)
+          useConversationStore.getState().setIsThinking(false)
         }),
       },
       { collapsed: true }

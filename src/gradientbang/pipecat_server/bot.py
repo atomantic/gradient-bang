@@ -5,18 +5,14 @@ from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from loguru import logger
-from gradientbang.pipecat_server.s3_smart_turn import S3SmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
     BotSpeakingFrame,
     EndFrame,
     InterruptionFrame,
-    LLMContextFrame,
-    LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMMessagesAppendFrame,
     LLMRunFrame,
-    LLMTextFrame,
     StartFrame,
     StopFrame,
     TranscriptionFrame,
@@ -37,7 +33,9 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.frameworks.rtvi import (
+    RTVIFunctionCallReportLevel,
     RTVIObserver,
+    RTVIObserverParams,
     RTVIProcessor,
     RTVIServerMessageFrame,
 )
@@ -51,6 +49,7 @@ from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.time import time_now_iso8601
 
+from gradientbang.pipecat_server.s3_smart_turn import S3SmartTurnAnalyzerV3
 from gradientbang.utils.llm_factory import (
     create_llm_service,
     get_ui_agent_llm_config,
@@ -88,6 +87,7 @@ init_weave()
 
 if os.getenv("BOT_USE_KRISP"):
     from pipecat.audio.filters.krisp_viva_filter import KrispVivaFilter
+
 
 # Log filter — applied in _configure_logging() which runs inside bot() so it
 # takes effect after pipecat's runner has set up its own loguru handlers.
@@ -189,9 +189,13 @@ async def _startup_init_local_api() -> tuple[LocalApiServer, str]:
 
 
 @traced
-async def _startup_resolve_character(character_id_hint: str | None, character_name_hint: str | None, server_url: str):
+async def _startup_resolve_character(
+    character_id_hint: str | None, character_name_hint: str | None, server_url: str
+):
     """Resolve character identity (traced span)."""
-    return await _resolve_character_identity(character_id_hint, server_url, character_name_hint=character_name_hint)
+    return await _resolve_character_identity(
+        character_id_hint, server_url, character_name_hint=character_name_hint
+    )
 
 
 @traced
@@ -219,7 +223,9 @@ async def _startup_init_llm(task_manager: "VoiceTaskManager"):
 
 
 @traced
-async def bot_startup(character_id_hint: str | None, character_name_hint: str | None, server_url: str):
+async def bot_startup(
+    character_id_hint: str | None, character_name_hint: str | None, server_url: str
+):
     """Traced startup wrapper — initializes all services for the bot pipeline."""
 
     rtvi = RTVIProcessor()
@@ -247,12 +253,10 @@ async def bot_startup(character_id_hint: str | None, character_name_hint: str | 
         )
         return local_api_server, character_id, character_display_name
 
-    (local_api_server, character_id, character_display_name), stt, tts = (
-        await asyncio.gather(
-            _chain_a(),
-            _startup_init_stt(),
-            _startup_init_tts(),
-        )
+    (local_api_server, character_id, character_display_name), stt, tts = await asyncio.gather(
+        _chain_a(),
+        _startup_init_stt(),
+        _startup_init_tts(),
     )
 
     logger.info(
@@ -285,23 +289,15 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
     character_name_hint = body.get("character_name")
 
     (
-        rtvi, local_api_server,
-        character_id, character_display_name,
-        task_manager, stt, tts, llm,
+        rtvi,
+        local_api_server,
+        character_id,
+        character_display_name,
+        task_manager,
+        stt,
+        tts,
+        llm,
     ) = await bot_startup(character_id_hint, character_name_hint, server_url)
-
-    @llm.event_handler("on_function_calls_started")
-    async def on_function_calls_started(service, function_calls):
-        for call in function_calls:
-            await rtvi.push_frame(
-                RTVIServerMessageFrame(
-                    {
-                        "frame_type": "event",
-                        "event": "llm.function_call",
-                        "payload": {"name": call.function_name},
-                    }
-                )
-            )
 
     token_usage_metrics = TokenUsageMetricsProcessor(source="bot")
 
@@ -433,8 +429,8 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
                     token_usage_metrics,
                     say_text_voice_guard,
                     tts,
-                    assistant_aggregator,
                     output_transport,
+                    assistant_aggregator,
                     compression_consumer,  # Receives compression results
                 ],
                 # Compression monitoring branch (sink)
@@ -455,6 +451,11 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
             enable_usage_metrics=True,
         ),
         rtvi_processor=rtvi,
+        rtvi_observer_params=RTVIObserverParams(
+            function_call_report_level={
+                "*": RTVIFunctionCallReportLevel.FULL,
+            },
+        ),
         cancel_on_idle_timeout=False,
         idle_timeout_secs=600,
         idle_timeout_frames=(BotSpeakingFrame, UserSpeakingFrame, TaskActivityFrame),
@@ -508,29 +509,13 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
             except Exception as exc:
                 logger.error(f"Local API server stop failed: {exc}")
 
-    # Patch RTVI observer to ignore LLM frames from UI branch sources.
-    # This prevents UI agent inference from leaking bot-llm-text, user-llm-text,
-    # bot-llm-started, bot-llm-stopped RTVI messages to the client.
-    # Note: Uses a closure (not default kwargs) so inspect.signature sees exactly
-    # 1 parameter — matching the expected on_push_frame(data) convention that
-    # TaskObserver._proxy_task_handler checks.
-    _LLM_FRAME_TYPES = (
-        LLMTextFrame,
-        LLMContextFrame,
-        LLMFullResponseStartFrame,
-        LLMFullResponseEndFrame,
-    )
+    # Tell the RTVI observer to ignore all frames from UI branch processors.
+    # This prevents UI agent inference from leaking LLM text, context, and
+    # function call RTVI messages to the client.
     for obs in task._observer._observers:
         if isinstance(obs, RTVIObserver):
-            _orig_rtvi_on_push = obs.on_push_frame
-
-            async def _filtered_rtvi_on_push(data):
-                if data.source in ui_branch_sources and isinstance(data.frame, _LLM_FRAME_TYPES):
-                    return
-                await _orig_rtvi_on_push(data)
-
-            obs.on_push_frame = _filtered_rtvi_on_push
-            logger.info("Installed source-based LLM frame filter on RTVI observer")
+            obs._ignored_sources = ui_branch_sources
+            logger.info("Set RTVI observer ignored_sources to UI branch processors")
             break
 
     @task.rtvi.event_handler("on_client_ready")
@@ -904,9 +889,7 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
                 )
             except Exception as exc:
                 logger.error(f"combat-action failed: {exc}")
-                await rtvi.send_server_message(
-                    {"frame_type": "error", "error": str(exc)}
-                )
+                await rtvi.send_server_message({"frame_type": "error", "error": str(exc)})
             return
 
         # Handle say-text: generate TTS with an optional temporary voice

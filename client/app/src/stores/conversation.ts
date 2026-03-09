@@ -14,6 +14,7 @@ interface ConversationState {
   messageCallbacks: Map<string, (message: ConversationMessage) => void>
   // Simple state per message for tracking spoken position
   botOutputMessageState: Map<string, BotOutputMessageCursor>
+  isThinking: boolean
 
   // Actions
   registerMessageCallback: (id: string, callback?: (message: ConversationMessage) => void) => void
@@ -24,7 +25,7 @@ interface ConversationState {
   finalizeLastMessage: (role: "user" | "assistant") => void
   removeEmptyLastMessage: (role: "user" | "assistant") => void
   injectMessage: (message: {
-    role: "user" | "assistant" | "system"
+    role: "user" | "assistant" | "system" | "ui"
     parts: ConversationMessagePart[]
   }) => void
   upsertUserTranscript: (text: string | React.ReactNode, final: boolean) => void
@@ -71,6 +72,8 @@ interface ConversationState {
     result?: unknown
     cancelled?: boolean
   }) => void
+
+  setIsThinking: (thinking: boolean) => void
 }
 
 export const sortByCreatedAt = (a: ConversationMessage, b: ConversationMessage): number => {
@@ -132,6 +135,7 @@ export const mergeMessages = (messages: ConversationMessage[]): ConversationMess
       lastMerged.role === currentMessage.role &&
       currentMessage.role !== "system" &&
       currentMessage.role !== "function_call" &&
+      currentMessage.role !== "ui" &&
       timeDiff < 30000
 
     if (shouldMerge) {
@@ -212,6 +216,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
   messages: [],
   messageCallbacks: new Map(),
   botOutputMessageState: new Map(),
+  isThinking: false,
 
   registerMessageCallback: (id, callback) =>
     set((state) => {
@@ -375,7 +380,6 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
 
         const updatedMessage: ConversationMessage = {
           ...target,
-          final: final ? true : target.final,
           parts,
           updatedAt: now.toISOString(),
         }
@@ -388,10 +392,13 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
         return { messages: processedMessages }
       }
 
-      // Create a new user message initialized with this transcript
+      // Create a new user message initialized with this transcript.
+      // Message stays non-final; only parts track STT segment boundaries.
+      // The message itself is finalized by finalizeLastMessage("user")
+      // when UserStoppedSpeaking fires.
       const newMessage: ConversationMessage = {
         role: "user",
-        final,
+        final: false,
         parts: [
           {
             text,
@@ -572,7 +579,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
       const updatedMessages = [...state.messages, message]
       const processedMessages = normalizeMessagesForUI(updatedMessages)
       callAllMessageCallbacks(state.messageCallbacks, message)
-      return { messages: processedMessages }
+      return { messages: processedMessages, isThinking: true }
     })
   },
 
@@ -717,4 +724,9 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
       }
     }
   },
+
+  setIsThinking: (thinking) =>
+    set({
+      isThinking: thinking,
+    }),
 }))

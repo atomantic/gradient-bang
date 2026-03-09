@@ -93,6 +93,7 @@ export const nebulaFragmentShader = `
                   // Final color composition
                   vec3 col = baseD * nebulaColorPrimary + c2d * nebulaColorSecondary + stars.xyz * starScale;
                   col *= color * intensity;
+                  col = clamp(col, 0.0, 1.0);
 
                   gl_FragColor = vec4(col, clamp(intensity, 0.0, 1.0));
                 }

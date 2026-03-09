@@ -60,7 +60,7 @@ export interface UISlice {
 
 export const createUISlice: StateCreator<UISlice> = (set, get) => ({
   uiState: "idle",
-  uiMode: getLocalSettings()?.defaultUIMode ?? "tasks",
+  uiMode: getLocalSettings()?.defaultUIMode ?? "map",
   activeScreen: undefined,
   activeModal: undefined,
   activePanel: "logs",
@@ -247,13 +247,6 @@ export const createUISlice: StateCreator<UISlice> = (set, get) => ({
     set(
       produce((state) => {
         state.lookAtTarget = target
-      })
-    )
-  },
-  setLLMIsWorking: (isWorking: boolean) => {
-    set(
-      produce((state) => {
-        state.llmIsWorking = isWorking
       })
     )
   },

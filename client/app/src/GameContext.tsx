@@ -4,6 +4,7 @@ import { RTVIEvent } from "@pipecat-ai/client-js"
 import { usePipecatClient, useRTVIClientEvent } from "@pipecat-ai/client-react"
 
 import { GameContext } from "@/hooks/useGameContext"
+import { useConversationStore } from "@/stores/conversation"
 import useGameStore, { GameInitStateMessage } from "@/stores/game"
 import {
   applyCombatActionAcceptedState,
@@ -377,6 +378,10 @@ export function GameProvider({ children }: GameProviderProps) {
                 !!eventPlayerId && eventPlayerId === useGameStore.getState().playerSessionId
 
               if (isLocalSector && !isLocalPlayer) {
+                const displayName =
+                  data.player?.player_type === "corporation_ship" && data.ship?.ship_name ?
+                    data.ship.ship_name
+                  : data.player.name
                 if (data.movement === "arrive") {
                   console.debug("[GAME EVENT] Adding player to sector", e.payload)
                   const sectorPlayer: Player = {
@@ -386,7 +391,7 @@ export function GameProvider({ children }: GameProviderProps) {
                   useGameStore.getState().addSectorPlayer(sectorPlayer)
                   useGameStore.getState().addActivityLogEntry({
                     type: "character.moved",
-                    message: `[${data.player.name}] arrived in sector`,
+                    message: `[${displayName}] arrived in sector`,
                     meta: {
                       player: data.player,
                       ship: data.ship,
@@ -400,7 +405,7 @@ export function GameProvider({ children }: GameProviderProps) {
                   useGameStore.getState().removeSectorPlayer(data.player)
                   useGameStore.getState().addActivityLogEntry({
                     type: "character.moved",
-                    message: `[${data.player.name}] departed from sector`,
+                    message: `[${displayName}] departed from sector`,
                     meta: {
                       player: data.player,
                       ship: data.ship,
@@ -1455,13 +1460,6 @@ export function GameProvider({ children }: GameProviderProps) {
               break
             }
 
-            case "llm.function_call": {
-              console.debug("[GAME EVENT] LLM task message", e.payload)
-              const data = e.payload as Msg.LLMTaskMessage
-              useGameStore.getState().setLLMIsWorking(!!data.name)
-              break
-            }
-
             case "error": {
               console.debug("[GAME EVENT] Error", e.payload)
               const data = e.payload as Msg.ErrorMessage
@@ -1480,6 +1478,7 @@ export function GameProvider({ children }: GameProviderProps) {
               const uiPayload = e.payload as Record<string, unknown>
               if (uiPayload?.["ui-action"] === "control_ui") {
                 console.debug("[GAME EVENT] UI action control_ui", uiPayload)
+
                 // Panel toggling is UI-level, handle in UISlice
                 if (typeof uiPayload.show_panel === "string") {
                   useGameStore
@@ -1522,13 +1521,38 @@ export function GameProvider({ children }: GameProviderProps) {
                   clearCoursePlot: uiPayload.clear_course_plot === true,
                 })
               }
+
+              // Inject sub-agent message into the conversation panel
+              if (typeof uiPayload.show_panel === "string") {
+                useConversationStore.getState().injectMessage({
+                  role: "ui",
+                  parts: [
+                    {
+                      text: "Show Panel(" + (uiPayload.show_panel as UIMode | "default") + ")",
+                      final: true,
+                      createdAt: new Date().toISOString(),
+                    },
+                  ],
+                })
+              } else {
+                useConversationStore.getState().injectMessage({
+                  role: "ui",
+                  parts: [
+                    {
+                      text: "Map Action",
+                      final: true,
+                      createdAt: new Date().toISOString(),
+                    },
+                  ],
+                })
+              }
               break
             }
 
             case "ui-agent-context-summary": {
               console.debug("[GAME EVENT] UI agent context summary", e.payload)
               const data = e.payload as Msg.UIAgentContextSummaryMessage
-              useGameStore.getState().injectMessage({
+              useConversationStore.getState().injectMessage({
                 role: "system",
                 parts: [
                   {
