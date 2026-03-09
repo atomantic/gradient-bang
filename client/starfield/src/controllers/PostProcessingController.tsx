@@ -16,7 +16,7 @@ import { PostProcessingManager, type PPConfig } from "./PostProcessingManager"
 const DEFAULT_PP_CONFIG: PPConfig = {
   // Sharpening
   sharpening_enabled: true,
-  sharpening_intensity: 0.6,
+  sharpening_intensity: 0.35,
   sharpening_radius: 3.0,
   // Dithering
   dithering_enabled: true,
@@ -27,7 +27,7 @@ const DEFAULT_PP_CONFIG: PPConfig = {
   dithering_dpr: 1.0,
   // Grading
   grading_enabled: true,
-  grading_brightness: 0.05,
+  grading_brightness: 0.1,
   grading_contrast: 0.1,
   grading_saturation: 0.3,
   grading_tintEnabled: false,
@@ -108,10 +108,7 @@ export const PostProcessingController = () => {
   } = starfieldConfig
 
   // Get active palette (memoized to stabilize reference)
-  const palette = useMemo(
-    () => getPalette(starfieldConfig.palette),
-    [starfieldConfig.palette]
-  )
+  const palette = useMemo(() => getPalette(starfieldConfig.palette), [starfieldConfig.palette])
 
   // Default colors from palette (memoized to stabilize references)
   const defaultTintPrimary = useMemo(
@@ -168,228 +165,194 @@ export const PostProcessingController = () => {
   // Leva controls - conditional based on debug mode
   const [levaValues, set] = useControls(
     () =>
-      (showControls
-        ? {
-            "Post Processing": folder(
-              {
-                Sharpening: folder(
-                  {
-                    sharpening_enabled: {
-                      value:
-                        storedSharpening?.enabled ??
-                        DEFAULT_PP_CONFIG.sharpening_enabled,
-                      label: "Enable Sharpening",
-                    },
-                    sharpening_intensity: {
-                      value:
-                        storedSharpening?.intensity ??
-                        DEFAULT_PP_CONFIG.sharpening_intensity,
-                      label: "Intensity",
-                      min: 0,
-                      max: 2,
-                      step: 0.05,
-                    },
-                    sharpening_radius: {
-                      value:
-                        storedSharpening?.radius ??
-                        DEFAULT_PP_CONFIG.sharpening_radius,
-                      label: "Radius",
-                      min: 1,
-                      max: 10,
-                      step: 0.5,
-                    },
+      (showControls ?
+        {
+          "Post Processing": folder(
+            {
+              Sharpening: folder(
+                {
+                  sharpening_enabled: {
+                    value: storedSharpening?.enabled ?? DEFAULT_PP_CONFIG.sharpening_enabled,
+                    label: "Enable Sharpening",
                   },
-                  { collapsed: true }
-                ),
-                Dithering: folder(
-                  {
-                    dithering_enabled: {
-                      value:
-                        storedDithering?.enabled ??
-                        DEFAULT_PP_CONFIG.dithering_enabled,
-                      label: "Enable Dithering",
-                    },
-                    dithering_gridSize: {
-                      value:
-                        storedDithering?.gridSize ??
-                        DEFAULT_PP_CONFIG.dithering_gridSize,
-                      min: 0.5,
-                      max: 20,
-                      step: 0.25,
-                      label: "Effect Resolution",
-                    },
-                    dithering_pixelSizeRatio: {
-                      value:
-                        storedDithering?.pixelSizeRatio ??
-                        DEFAULT_PP_CONFIG.dithering_pixelSizeRatio,
-                      min: 0,
-                      max: 10,
-                      step: 1,
-                      label: "Pixelation Strength",
-                    },
-                    dithering_blendMode: {
-                      value: DEFAULT_PP_CONFIG.dithering_blendMode,
-                      options: {
-                        SET: BlendFunction.SET,
-                        Normal: BlendFunction.NORMAL,
-                        Add: BlendFunction.ADD,
-                        Screen: BlendFunction.SCREEN,
-                        Overlay: BlendFunction.OVERLAY,
-                        Multiply: BlendFunction.MULTIPLY,
-                      },
-                      label: "Blend Function",
-                    },
-                    dithering_grayscaleOnly: {
-                      value:
-                        storedDithering?.grayscaleOnly ??
-                        DEFAULT_PP_CONFIG.dithering_grayscaleOnly,
-                      label: "Grayscale Only",
-                    },
+                  sharpening_intensity: {
+                    value: storedSharpening?.intensity ?? DEFAULT_PP_CONFIG.sharpening_intensity,
+                    label: "Intensity",
+                    min: 0,
+                    max: 2,
+                    step: 0.05,
                   },
-                  { collapsed: true }
-                ),
-                Grading: folder(
-                  {
-                    grading_enabled: {
-                      value:
-                        storedGrading?.enabled ??
-                        DEFAULT_PP_CONFIG.grading_enabled,
-                      label: "Enable Grading",
-                    },
-                    grading_brightness: {
-                      value:
-                        storedGrading?.brightness ??
-                        DEFAULT_PP_CONFIG.grading_brightness,
-                      min: 0,
-                      max: 2,
-                      step: 0.01,
-                      label: "Brightness",
-                    },
-                    grading_contrast: {
-                      value:
-                        storedGrading?.contrast ??
-                        palette.contrast ??
-                        DEFAULT_PP_CONFIG.grading_contrast,
-                      min: 0,
-                      max: 2,
-                      step: 0.01,
-                      label: "Contrast",
-                    },
-                    grading_saturation: {
-                      value:
-                        storedGrading?.saturation ??
-                        palette.saturation ??
-                        DEFAULT_PP_CONFIG.grading_saturation,
-                      min: -2,
-                      max: 2,
-                      step: 0.1,
-                      label: "Saturation",
-                    },
-                    grading_tintEnabled: {
-                      value:
-                        storedGrading?.tintEnabled ??
-                        DEFAULT_PP_CONFIG.grading_tintEnabled,
-                      label: "Enable Tint",
-                    },
-                    grading_tintIntensity: {
-                      value:
-                        storedGrading?.tintIntensity ??
-                        DEFAULT_PP_CONFIG.grading_tintIntensity,
-                      min: 0,
-                      max: 1,
-                      step: 0.01,
-                      label: "Tint Intensity",
-                    },
-                    grading_tintContrast: {
-                      value:
-                        storedGrading?.tintContrast ??
-                        DEFAULT_PP_CONFIG.grading_tintContrast,
-                      min: 0,
-                      max: 3,
-                      step: 0.1,
-                      label: "Tint Contrast",
-                    },
-                    grading_tintColorPrimary: {
-                      value: defaultTintPrimary,
-                      label: "Tint Primary Color",
-                    },
-                    grading_tintColorSecondary: {
-                      value: defaultTintSecondary,
-                      label: "Tint Secondary Color",
-                    },
+                  sharpening_radius: {
+                    value: storedSharpening?.radius ?? DEFAULT_PP_CONFIG.sharpening_radius,
+                    label: "Radius",
+                    min: 1,
+                    max: 10,
+                    step: 0.5,
                   },
-                  { collapsed: true }
-                ),
-                Exposure: folder(
-                  {
-                    exposure_enabled: {
-                      value: DEFAULT_PP_CONFIG.exposure_enabled,
-                      label: "Enable Exposure",
-                    },
+                },
+                { collapsed: true }
+              ),
+              Dithering: folder(
+                {
+                  dithering_enabled: {
+                    value: storedDithering?.enabled ?? DEFAULT_PP_CONFIG.dithering_enabled,
+                    label: "Enable Dithering",
                   },
-                  { collapsed: true }
-                ),
-                Shockwave: folder(
-                  {
-                    shockwave_enabled: {
-                      value:
-                        storedShockwave?.enabled ??
-                        DEFAULT_PP_CONFIG.shockwave_enabled,
-                      label: "Enable Shockwave",
-                    },
-                    shockwave_speed: {
-                      value:
-                        storedShockwave?.speed ??
-                        DEFAULT_PP_CONFIG.shockwave_speed,
-                      min: 0.1,
-                      max: 5,
-                      step: 0.1,
-                      label: "Speed",
-                    },
-                    shockwave_maxRadius: {
-                      value:
-                        storedShockwave?.maxRadius ??
-                        DEFAULT_PP_CONFIG.shockwave_maxRadius,
-                      min: 0.1,
-                      max: 2,
-                      step: 0.05,
-                      label: "Max Radius",
-                    },
-                    shockwave_waveSize: {
-                      value:
-                        storedShockwave?.waveSize ??
-                        DEFAULT_PP_CONFIG.shockwave_waveSize,
-                      min: 0.01,
-                      max: 0.5,
-                      step: 0.01,
-                      label: "Wave Size",
-                    },
-                    shockwave_amplitude: {
-                      value:
-                        storedShockwave?.amplitude ??
-                        DEFAULT_PP_CONFIG.shockwave_amplitude,
-                      min: 0,
-                      max: 0.5,
-                      step: 0.01,
-                      label: "Amplitude",
-                    },
-                    shockwave_distance: {
-                      value:
-                        storedShockwave?.distance ??
-                        DEFAULT_PP_CONFIG.shockwave_distance,
-                      min: 1,
-                      max: 20,
-                      step: 0.5,
-                      label: "Distance",
-                    },
+                  dithering_gridSize: {
+                    value: storedDithering?.gridSize ?? DEFAULT_PP_CONFIG.dithering_gridSize,
+                    min: 0.5,
+                    max: 20,
+                    step: 0.25,
+                    label: "Effect Resolution",
                   },
-                  { collapsed: true }
-                ),
-              },
-              { collapsed: true, order: -1 }
-            ),
-          }
-        : {}) as Schema
+                  dithering_pixelSizeRatio: {
+                    value:
+                      storedDithering?.pixelSizeRatio ?? DEFAULT_PP_CONFIG.dithering_pixelSizeRatio,
+                    min: 0,
+                    max: 10,
+                    step: 1,
+                    label: "Pixelation Strength",
+                  },
+                  dithering_blendMode: {
+                    value: DEFAULT_PP_CONFIG.dithering_blendMode,
+                    options: {
+                      SET: BlendFunction.SET,
+                      Normal: BlendFunction.NORMAL,
+                      Add: BlendFunction.ADD,
+                      Screen: BlendFunction.SCREEN,
+                      Overlay: BlendFunction.OVERLAY,
+                      Multiply: BlendFunction.MULTIPLY,
+                    },
+                    label: "Blend Function",
+                  },
+                  dithering_grayscaleOnly: {
+                    value:
+                      storedDithering?.grayscaleOnly ?? DEFAULT_PP_CONFIG.dithering_grayscaleOnly,
+                    label: "Grayscale Only",
+                  },
+                },
+                { collapsed: true }
+              ),
+              Grading: folder(
+                {
+                  grading_enabled: {
+                    value: storedGrading?.enabled ?? DEFAULT_PP_CONFIG.grading_enabled,
+                    label: "Enable Grading",
+                  },
+                  grading_brightness: {
+                    value: storedGrading?.brightness ?? DEFAULT_PP_CONFIG.grading_brightness,
+                    min: 0,
+                    max: 2,
+                    step: 0.01,
+                    label: "Brightness",
+                  },
+                  grading_contrast: {
+                    value:
+                      storedGrading?.contrast ??
+                      palette.contrast ??
+                      DEFAULT_PP_CONFIG.grading_contrast,
+                    min: 0,
+                    max: 2,
+                    step: 0.01,
+                    label: "Contrast",
+                  },
+                  grading_saturation: {
+                    value:
+                      storedGrading?.saturation ??
+                      palette.saturation ??
+                      DEFAULT_PP_CONFIG.grading_saturation,
+                    min: -2,
+                    max: 2,
+                    step: 0.1,
+                    label: "Saturation",
+                  },
+                  grading_tintEnabled: {
+                    value: storedGrading?.tintEnabled ?? DEFAULT_PP_CONFIG.grading_tintEnabled,
+                    label: "Enable Tint",
+                  },
+                  grading_tintIntensity: {
+                    value: storedGrading?.tintIntensity ?? DEFAULT_PP_CONFIG.grading_tintIntensity,
+                    min: 0,
+                    max: 1,
+                    step: 0.01,
+                    label: "Tint Intensity",
+                  },
+                  grading_tintContrast: {
+                    value: storedGrading?.tintContrast ?? DEFAULT_PP_CONFIG.grading_tintContrast,
+                    min: 0,
+                    max: 3,
+                    step: 0.1,
+                    label: "Tint Contrast",
+                  },
+                  grading_tintColorPrimary: {
+                    value: defaultTintPrimary,
+                    label: "Tint Primary Color",
+                  },
+                  grading_tintColorSecondary: {
+                    value: defaultTintSecondary,
+                    label: "Tint Secondary Color",
+                  },
+                },
+                { collapsed: true }
+              ),
+              Exposure: folder(
+                {
+                  exposure_enabled: {
+                    value: DEFAULT_PP_CONFIG.exposure_enabled,
+                    label: "Enable Exposure",
+                  },
+                },
+                { collapsed: true }
+              ),
+              Shockwave: folder(
+                {
+                  shockwave_enabled: {
+                    value: storedShockwave?.enabled ?? DEFAULT_PP_CONFIG.shockwave_enabled,
+                    label: "Enable Shockwave",
+                  },
+                  shockwave_speed: {
+                    value: storedShockwave?.speed ?? DEFAULT_PP_CONFIG.shockwave_speed,
+                    min: 0.1,
+                    max: 5,
+                    step: 0.1,
+                    label: "Speed",
+                  },
+                  shockwave_maxRadius: {
+                    value: storedShockwave?.maxRadius ?? DEFAULT_PP_CONFIG.shockwave_maxRadius,
+                    min: 0.1,
+                    max: 2,
+                    step: 0.05,
+                    label: "Max Radius",
+                  },
+                  shockwave_waveSize: {
+                    value: storedShockwave?.waveSize ?? DEFAULT_PP_CONFIG.shockwave_waveSize,
+                    min: 0.01,
+                    max: 0.5,
+                    step: 0.01,
+                    label: "Wave Size",
+                  },
+                  shockwave_amplitude: {
+                    value: storedShockwave?.amplitude ?? DEFAULT_PP_CONFIG.shockwave_amplitude,
+                    min: 0,
+                    max: 0.5,
+                    step: 0.01,
+                    label: "Amplitude",
+                  },
+                  shockwave_distance: {
+                    value: storedShockwave?.distance ?? DEFAULT_PP_CONFIG.shockwave_distance,
+                    min: 1,
+                    max: 20,
+                    step: 0.5,
+                    label: "Distance",
+                  },
+                },
+                { collapsed: true }
+              ),
+            },
+            { collapsed: true, order: -1 }
+          ),
+        }
+      : {}) as Schema
   )
 
   // Get stable config from useControlSync
@@ -467,9 +430,7 @@ export const PostProcessingController = () => {
       if (!manager) return
 
       // Skip the OVERLAY render pass when tunnel is invisible (saves ~10ms GPU)
-      const tunnelOpacity = useUniformStore
-        .getState()
-        .getUniform<number>("tunnelOpacity")
+      const tunnelOpacity = useUniformStore.getState().getUniform<number>("tunnelOpacity")
       manager.overlayPassNeeded = (tunnelOpacity?.uniform?.value ?? 0) > 0
 
       manager.render(currentCamera, controlsRef.current.shockwave_distance)

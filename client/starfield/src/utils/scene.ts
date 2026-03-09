@@ -3,9 +3,7 @@ import { defaultProfile } from "@/profiles"
 import type { SceneConfig } from "@/types"
 import { useGameStore } from "@/useGameStore"
 
-export function generateRandomScene(
-  config: Partial<SceneConfig> = {}
-): SceneConfig {
+export function generateRandomScene(config: Partial<SceneConfig> = {}): SceneConfig {
   const { imageAssets } = useGameStore.getState().starfieldConfig
 
   // ============================================
@@ -14,17 +12,13 @@ export function generateRandomScene(
 
   // Filter to only skybox images for planet backgrounds
   const skyboxAssets = imageAssets?.filter((asset) => asset.type === "skybox")
-  const randomImageIndex = Math.floor(
-    Math.random() * (skyboxAssets?.length || 1)
-  )
+  const randomImageIndex = Math.floor(Math.random() * (skyboxAssets?.length || 1))
 
   const randomPlanetScale = Math.floor(Math.random() * 100) + 30 // 30-100
 
   // Opacity: smaller planets are more transparent
   const randomPlanetOpacity =
-    randomPlanetScale < 100
-      ? Math.random() * 0.5 + 0.2
-      : (defaultProfile.planet?.opacity ?? 1)
+    randomPlanetScale < 100 ? Math.random() * 0.5 + 0.2 : (defaultProfile.planet?.opacity ?? 1)
 
   // Shadow opacity graduated by planet size, factored by overall opacity
   // All sizes have minimum 0.3
@@ -41,10 +35,8 @@ export function generateRandomScene(
 
   // Position: range scales with planet size (larger planets can be further out)
   const positionRange = 15 + (randomPlanetScale - 20) * 0.35 // ~15 for small, ~50 for large
-  const randomPlanetPositionX =
-    Math.random() * positionRange * 2 - positionRange
-  const randomPlanetPositionY =
-    Math.random() * positionRange * 2 - positionRange
+  const randomPlanetPositionX = Math.random() * positionRange * 2 - positionRange
+  const randomPlanetPositionY = Math.random() * positionRange * 2 - positionRange
 
   // ============================================
   // NEBULA
@@ -54,7 +46,7 @@ export function generateRandomScene(
   const randomIterPrimary = Math.floor(Math.random() * 49) + 1 // 1-50
 
   // Higher primary iterations = lower intensity to avoid visual overload
-  const randomNebulaIntensity = 0.5 + 0.1
+  const randomNebulaIntensity = Math.random() * 0.1 + 0.5 // 0.5-0.6
 
   // Secondary iterations: adjusted based on primary and intensity
   let randomIterSecondary: number
@@ -71,9 +63,9 @@ export function generateRandomScene(
   const randomDomainScale = Math.random() * 2.5 + 0.5 // 0.5-3
   // Warp decay based on nebula intensity: lower intensity needs higher minimum
   const randomWarpDecay =
-    randomNebulaIntensity < 0.5
-      ? Math.random() * 2 + 3 // 3-5 for low intensity
-      : Math.random() * 4 + 1 // 1-5 for high intensity
+    randomNebulaIntensity < 0.5 ?
+      Math.random() * 2 + 3 // 3-5 for low intensity
+    : Math.random() * 4 + 1 // 1-5 for high intensity
 
   // ============================================
   // GALAXY
@@ -99,8 +91,7 @@ export function generateRandomScene(
 
   return {
     ...config,
-    palette:
-      getPaletteNames()[Math.floor(Math.random() * getPaletteNames().length)],
+    palette: getPaletteNames()[Math.floor(Math.random() * getPaletteNames().length)],
     planet: {
       ...config.planet,
       imageIndex: randomImageIndex,
