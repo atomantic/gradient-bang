@@ -83,7 +83,7 @@ export const Title = ({ onViewNext }: { onViewNext: () => void }) => {
           className="min-w-lg border border-border pb-5 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-1000 shadow-long"
         >
           <CardHeader className="block">
-            <h1 className="text-white text-3xl font-bold uppercase">
+            <h1 className="text-white text-3xl font-bold uppercase text-center">
               <ScrambleText>Gradient Bang</ScrambleText>
             </h1>
           </CardHeader>
