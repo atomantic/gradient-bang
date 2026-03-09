@@ -59,7 +59,7 @@ export const Starfield = () => {
       useAudioStore.getState().playSound("enter", { volume: 0.2 })
     } else {
       if (!warpCooldownTimer) {
-        useAudioStore.getState().playSound("warp", { volume: 0.2 })
+        //useAudioStore.getState().playSound("warp", { volume: 0.2 })
       }
       if (warpCooldownTimer) clearTimeout(warpCooldownTimer)
       warpCooldownTimer = setTimeout(() => {
