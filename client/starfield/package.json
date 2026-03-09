@@ -1,7 +1,7 @@
 {
   "name": "@gradient-bang/starfield",
   "private": true,
-  "version": "0.2.24",
+  "version": "0.2.25",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -40,7 +40,7 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
-"@types/node": "^24.10.0",
+    "@types/node": "^24.10.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@types/three": "^0.181.0",
