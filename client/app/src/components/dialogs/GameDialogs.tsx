@@ -1,4 +1,3 @@
-import type { SocialReplayCapture } from "@/capture/SocialReplayCapture"
 import { SocialReplayDialog } from "@/capture/SocialReplayDialog"
 
 import { Disconnect } from "./Disconnect"
@@ -8,7 +7,7 @@ import { QuestList } from "./QuestList"
 import { Settings } from "./Settings"
 import { ShipDetails } from "./ShipDetails"
 
-export const GameDialogs = ({ capture }: { capture: SocialReplayCapture }) => (
+export const GameDialogs = () => (
   <>
     <Settings />
     <Leaderboard />
@@ -16,6 +15,6 @@ export const GameDialogs = ({ capture }: { capture: SocialReplayCapture }) => (
     <QuestCodec />
     <QuestList />
     <ShipDetails />
-    <SocialReplayDialog capture={capture} />
+    <SocialReplayDialog />
   </>
 )

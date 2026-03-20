@@ -1,4 +1,4 @@
-import type { VoiceCapture } from "./VoiceCapture"
+import { VoiceCapture } from "./VoiceCapture"
 
 // --- SBEC-compatible types (matches sbec-demo/src/types.ts) ---
 
@@ -67,6 +67,48 @@ export class SocialReplayCapture {
 
   playerMicCapture: VoiceCapture | null = null
   botVoiceCapture: VoiceCapture | null = null
+
+  private currentLocalTrack: MediaStreamTrack | null = null
+  private currentBotTrack: MediaStreamTrack | null = null
+
+  setLocalTrack(track: MediaStreamTrack | null): void {
+    if (track === this.currentLocalTrack) return
+    this.currentLocalTrack = track
+
+    this.playerMicCapture?.stop()
+    this.playerMicCapture = null
+
+    if (track) {
+      const vc = new VoiceCapture()
+      vc.start(track)
+      this.playerMicCapture = vc
+    }
+  }
+
+  setBotTrack(track: MediaStreamTrack | null): void {
+    if (track === this.currentBotTrack) return
+    this.currentBotTrack = track
+
+    this.botVoiceCapture?.stop()
+    this.botVoiceCapture = null
+
+    if (track) {
+      const vc = new VoiceCapture()
+      vc.start(track)
+      this.botVoiceCapture = vc
+    }
+  }
+
+  destroy(): void {
+    this.playerMicCapture?.stop()
+    this.playerMicCapture = null
+    this.botVoiceCapture?.stop()
+    this.botVoiceCapture = null
+    this.currentLocalTrack = null
+    this.currentBotTrack = null
+    this.entries = []
+    this.latestByEvent.clear()
+  }
 
   log(eventName: string, components: EventLogComponentEntry[]): void {
     const now = Date.now()

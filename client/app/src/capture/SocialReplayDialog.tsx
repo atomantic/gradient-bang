@@ -2,19 +2,20 @@ import { useState } from "react"
 
 import { BaseDialog } from "@/components/dialogs/BaseDialog"
 import { Button } from "@/components/primitives/Button"
+import { useCaptureStore } from "@/stores/captureStore"
 import useGameStore from "@/stores/game"
-
-import type { SocialReplayCapture } from "./SocialReplayCapture"
 
 const MOODS = ["exciting", "funny", "dramatic", "intense"] as const
 
-export const SocialReplayDialog = ({ capture }: { capture: SocialReplayCapture }) => {
+export const SocialReplayDialog = () => {
+  const capture = useCaptureStore((s) => s.capture)
   const [description, setDescription] = useState("")
   const [mood, setMood] = useState<string | undefined>(undefined)
   const [saving, setSaving] = useState(false)
   const setActiveModal = useGameStore.use.setActiveModal()
 
   const handleSave = async () => {
+    if (!capture) return
     setSaving(true)
     try {
       await capture.download({ description, mood })
@@ -56,7 +57,7 @@ export const SocialReplayDialog = ({ capture }: { capture: SocialReplayCapture }
           </div>
         </div>
 
-        <Button variant="default" size="sm" onClick={handleSave} disabled={saving}>
+        <Button variant="default" size="sm" onClick={handleSave} disabled={saving || !capture}>
           {saving ? "Saving..." : "Save Clip"}
         </Button>
       </div>
