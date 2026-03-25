@@ -1,13 +1,11 @@
-import { useEffect, useId, useMemo } from "react"
-
-import { useConversationContext } from "@/components/conversation/ConversationProvider"
-import { useConversationStore } from "@/stores/conversation"
-
 import type {
   AggregationMetadata,
   ConversationMessage,
   ConversationMessagePart,
 } from "@/types/conversation"
+import { useConversationContext } from "@/components/ConversationProvider"
+import { useEffect, useId, useMemo } from "react"
+import { useConversationStore } from "@/stores/conversationStore"
 
 /**
  * Options for `usePipecatConversation`.
@@ -152,3 +150,9 @@ export const usePipecatConversation = ({ onMessageAdded, aggregationMetadata }: 
     injectMessage,
   }
 }
+
+/**
+ * @deprecated Use `usePipecatConversation` instead. This alias will be removed in a future major release.
+ */
+export const useConversation = usePipecatConversation
+export default usePipecatConversation

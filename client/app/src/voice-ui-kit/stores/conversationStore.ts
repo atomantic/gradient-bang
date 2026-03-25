@@ -1,19 +1,16 @@
-import { create } from "zustand"
-
-import { applySpokenBotOutputProgress, type BotOutputMessageCursor } from "@/utils/conversation"
-
 import {
   type BotOutputText,
   type ConversationMessage,
   type ConversationMessagePart,
   type FunctionCallData,
 } from "@/types/conversation"
+import { applySpokenBotOutputProgress, type BotOutputMessageCursor } from "@/stores/botOutput"
+import { create } from "zustand"
 
 interface ConversationState {
   messages: ConversationMessage[]
   // Simple state per message for tracking spoken position
   botOutputMessageState: Map<string, BotOutputMessageCursor>
-  isThinking: boolean
 
   // Actions
   registerMessageCallback: (id: string, callback?: (message: ConversationMessage) => void) => void
@@ -24,7 +21,7 @@ interface ConversationState {
   finalizeLastMessage: (role: "user" | "assistant") => void
   removeEmptyLastMessage: (role: "user" | "assistant") => void
   injectMessage: (message: {
-    role: "user" | "assistant" | "system" | "ui"
+    role: "user" | "assistant" | "system"
     parts: ConversationMessagePart[]
   }) => void
   upsertUserTranscript: (text: string | React.ReactNode, final: boolean) => void
@@ -71,12 +68,14 @@ interface ConversationState {
     result?: unknown
     cancelled?: boolean
   }) => void
-
-  setIsThinking: (thinking: boolean) => void
 }
 
 export const sortByCreatedAt = (a: ConversationMessage, b: ConversationMessage): number => {
-  return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  return (
+    a.createdAt < b.createdAt ? -1
+    : a.createdAt > b.createdAt ? 1
+    : 0
+  )
 }
 
 export const isMessageEmpty = (message: ConversationMessage): boolean => {
@@ -134,7 +133,6 @@ export const mergeMessages = (messages: ConversationMessage[]): ConversationMess
       lastMerged.role === currentMessage.role &&
       currentMessage.role !== "system" &&
       currentMessage.role !== "function_call" &&
-      currentMessage.role !== "ui" &&
       timeDiff < 30000
 
     if (shouldMerge) {
@@ -145,7 +143,7 @@ export const mergeMessages = (messages: ConversationMessage[]): ConversationMess
         final: currentMessage.final !== false,
       }
     } else {
-      mergedMessages.push({ ...currentMessage })
+      mergedMessages.push(currentMessage)
     }
   }
 
@@ -214,7 +212,6 @@ const callAllMessageCallbacks = (message: ConversationMessage) => {
 export const useConversationStore = create<ConversationState>()((set, get) => ({
   messages: [],
   botOutputMessageState: new Map(),
-  isThinking: false,
 
   registerMessageCallback: (id, callback) => {
     messageCallbacks.set(id, callback || (() => {}))
@@ -411,7 +408,6 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
 
   updateAssistantBotOutput: (text, final, spoken, aggregatedBy) => {
     const now = new Date()
-
     set((state) => {
       const messages = [...state.messages]
       const botOutputMessageState = new Map(state.botOutputMessageState)
@@ -572,7 +568,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
       const updatedMessages = [...state.messages, message]
       const processedMessages = normalizeMessagesForUI(updatedMessages)
       callAllMessageCallbacks(message)
-      return { messages: processedMessages, isThinking: true }
+      return { messages: processedMessages }
     })
   },
 
@@ -717,9 +713,4 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
       }
     }
   },
-
-  setIsThinking: (thinking) =>
-    set({
-      isThinking: thinking,
-    }),
 }))

@@ -1,18 +1,17 @@
-import { createContext, useContext, useRef } from "react"
-
+import { hasUnspokenContent } from "@/stores/botOutput"
+import { useConversationStore } from "@/stores/conversationStore"
+import { type ConversationMessage, type ConversationMessagePart } from "@/types/conversation"
 import {
-  type BotOutputData,
+  BotOutputData,
+  BotReadyData,
   type LLMFunctionCallInProgressData,
   type LLMFunctionCallStartedData,
   type LLMFunctionCallStoppedData,
   RTVIEvent,
 } from "@pipecat-ai/client-js"
 import { useRTVIClientEvent } from "@pipecat-ai/client-react"
-
-import { useConversationStore } from "@/stores/conversation"
-import { hasUnspokenContent } from "@/utils/conversation"
-
-import { type ConversationMessage, type ConversationMessagePart } from "@/types/conversation"
+import { createContext, useContext, useMemo, useRef, useState } from "react"
+import { isMinVersion } from "@/utils/version"
 
 interface ConversationContextValue {
   messages: ConversationMessage[]
@@ -20,6 +19,11 @@ interface ConversationContextValue {
     role: "user" | "assistant" | "system"
     parts: ConversationMessagePart[]
   }) => void
+  /**
+   * Whether BotOutput events are supported (RTVI 1.1.0+)
+   * null = unknown (before BotReady), true = supported, false = not supported
+   */
+  botOutputSupported: boolean | null
 }
 
 const ConversationContext = createContext<ConversationContextValue | null>(null)
@@ -28,6 +32,8 @@ export const ConversationProvider = ({ children }: React.PropsWithChildren) => {
   const messages = useConversationStore((state) => state.messages)
   const injectMessage = useConversationStore((state) => state.injectMessage)
 
+  // null = unknown (before BotReady), true = supported, false = not supported
+  const [botOutputSupported, setBotOutputSupported] = useState<boolean | null>(null)
   const userStoppedTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
   const botStoppedSpeakingTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const assistantStreamResetRef = useRef<number>(0)
@@ -53,12 +59,10 @@ export const ConversationProvider = ({ children }: React.PropsWithChildren) => {
 
   useRTVIClientEvent(RTVIEvent.Connected, () => {
     useConversationStore.getState().clearMessages()
+    setBotOutputSupported(null)
     clearTimeout(botStoppedSpeakingTimeoutRef.current)
     botStoppedSpeakingTimeoutRef.current = undefined
     botOutputLastChunkRef.current = { spoken: "", unspoken: "" }
-
-    // Set initial thinking state before first speech
-    useConversationStore.getState().setIsThinking(true)
   })
 
   // Helper to ensure assistant message exists
@@ -94,6 +98,13 @@ export const ConversationProvider = ({ children }: React.PropsWithChildren) => {
     }
     return false
   }
+
+  // Detect BotOutput support from BotReady event
+  useRTVIClientEvent(RTVIEvent.BotReady, (botData: BotReadyData) => {
+    const rtviVersion = botData.version
+    const supportsBotOutput = isMinVersion(rtviVersion, [1, 1, 0])
+    setBotOutputSupported(supportsBotOutput)
+  })
 
   useRTVIClientEvent(RTVIEvent.BotOutput, (data: BotOutputData) => {
     // A BotOutput event means the response is still active; cancel any
@@ -146,7 +157,6 @@ export const ConversationProvider = ({ children }: React.PropsWithChildren) => {
     // Bot is speaking again; reset the finalize timer (bot was just pausing).
     clearTimeout(botStoppedSpeakingTimeoutRef.current)
     botStoppedSpeakingTimeoutRef.current = undefined
-    useConversationStore.getState().setIsThinking(false)
   })
 
   useRTVIClientEvent(RTVIEvent.UserStartedSpeaking, () => {
@@ -218,10 +228,14 @@ export const ConversationProvider = ({ children }: React.PropsWithChildren) => {
     })
   })
 
-  const contextValue: ConversationContextValue = {
-    messages,
-    injectMessage,
-  }
+  const contextValue = useMemo<ConversationContextValue>(
+    () => ({
+      messages,
+      injectMessage,
+      botOutputSupported,
+    }),
+    [messages, injectMessage, botOutputSupported]
+  )
 
   return (
     <ConversationContext.Provider value={contextValue}>{children}</ConversationContext.Provider>

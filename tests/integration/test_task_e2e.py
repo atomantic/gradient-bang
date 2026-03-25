@@ -221,6 +221,59 @@ class TestAsyncCompletionE2E:
         finally:
             await h.stop()
 
+    async def test_task_completion_triggers_single_inference(self):
+        """REGRESSION: Task completion should trigger exactly one voice LLM inference.
+
+        Before the fix, task completion caused duplicate inference because both:
+        1. The bus protocol (on_task_response) injects task.completed with run_llm=True
+        2. The task.finish game event via EventRelay also triggers run_llm=True
+
+        This caused the LLM to repeat itself (users reported 3x responses:
+        start_task result + two duplicate completion inferences).
+        """
+        h = E2EHarness(self.character_id, self.api, self.make_game_client)
+        await h.start()
+        try:
+            await h.join_game()
+
+            # Script: my_status → auto-finish
+            h.set_task_script([("my_status", {})])
+            result = await h.start_player_task("Quick status check")
+            assert result["success"] is True, f"start_task failed: {result}"
+
+            # Wait for task to complete (includes event polling)
+            completed = await h.wait_for_task_complete(timeout=30.0)
+            assert completed, "Task did not complete within timeout"
+
+            # Allow extra poll cycles to catch any late-arriving task.finish events
+            for _ in range(5):
+                await h.poll_and_feed_events()
+                await asyncio.sleep(0.3)
+
+            # Count inference-triggering frames related to task completion.
+            # Each (content, run_llm) pair where run_llm=True and content
+            # mentions task completion is one LLM inference trigger.
+            completion_inferences = [
+                (c, rl) for c, rl in h.llm_messages
+                if rl is True and ("task.completed" in c or "task.finish" in c)
+            ]
+
+            assert len(completion_inferences) == 1, (
+                f"Expected exactly 1 task-completion inference trigger, "
+                f"got {len(completion_inferences)}. "
+                f"This indicates duplicate delivery (bus protocol + game event). "
+                f"Frames: {[(c[:100], rl) for c, rl in completion_inferences]}"
+            )
+
+            # The single inference should come from the bus protocol (task.completed),
+            # not the game event (task.finish)
+            assert "task.completed" in completion_inferences[0][0], (
+                f"Completion inference should be from bus protocol (task.completed), "
+                f"got: {completion_inferences[0][0][:100]}"
+            )
+        finally:
+            await h.stop()
+
     async def test_async_completion_timeout_recovers(self):
         """When the completion event never arrives, the timeout fires and inference resumes."""
         h = E2EHarness(self.character_id, self.api, self.make_game_client)

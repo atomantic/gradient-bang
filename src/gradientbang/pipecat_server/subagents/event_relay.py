@@ -297,11 +297,12 @@ EVENT_CONFIGS: dict[str, EventConfig] = {
     ),
     # Task lifecycle
     "task.start": EventConfig(append=AppendRule.OWNED_TASK, task_scoped_allowlisted=True),
+    # Bus protocol (on_task_response) already injects task.completed with
+    # run_llm=True into the voice LLM.  If we also trigger inference here,
+    # the LLM runs twice on the same completion and repeats itself.
     "task.finish": EventConfig(
         append=AppendRule.OWNED_TASK,
-        inference=InferenceRule.OWNED,
         task_scoped_allowlisted=True,
-        suppress_deferred_inference=True,
     ),
     # Local movement
     "character.moved": EventConfig(append=AppendRule.LOCAL),

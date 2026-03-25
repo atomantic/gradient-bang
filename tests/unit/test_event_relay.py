@@ -1106,8 +1106,12 @@ class TestInferenceRules:
         _, run_llm = task_state.deferred_events[0]
         assert run_llm is False
 
-    async def test_owned_triggers_for_our_task(self):
-        """InferenceRule.OWNED — True when task is ours."""
+    async def test_owned_task_finish_appends_without_inference(self):
+        """task.finish appends for our task but does NOT trigger inference.
+
+        Bus protocol (on_task_response) already injects task.completed with
+        run_llm=True.  Triggering inference here would duplicate the response.
+        """
         relay, task_state, _, _ = _make_relay()
         task_state.our_task_ids.add("task-1")
         event = _make_event(
@@ -1120,12 +1124,12 @@ class TestInferenceRules:
         await relay._relay_event(event)
         assert len(task_state.deferred_events) == 1
         _, run_llm = task_state.deferred_events[0]
-        assert run_llm is True
+        assert run_llm is False
 
     async def test_owned_no_trigger_for_other_task(self):
         """InferenceRule.OWNED — False when task is not ours."""
         relay, task_state, _, _ = _make_relay()
-        # task.finish uses OWNED_TASK append + OWNED inference
+        # task.finish uses OWNED_TASK append
         # Without is_our_task, it won't even append
         event = _make_event(
             "task.finish",
