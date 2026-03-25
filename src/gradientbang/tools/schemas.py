@@ -771,6 +771,8 @@ LOAD_GAME_INFO = FunctionSchema(
                 "transfers",
                 "ships",
                 "event_logs",
+                "map_legend",
+                "lore",
             ],
             "description": "The topic to load detailed information about",
         },
