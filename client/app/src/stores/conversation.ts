@@ -326,15 +326,28 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
 
   injectMessage: (messageData) => {
     const now = new Date()
-    const message: ConversationMessage = {
-      role: messageData.role,
-      final: true,
-      parts: [...messageData.parts],
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    }
 
     set((state) => {
+      // If there's an active (non-final) assistant message, place injected
+      // message just before it so sorting keeps the active response at the bottom.
+      let createdAt = now.toISOString()
+      if (messageData.role !== "assistant") {
+        const activeAssistant = state.messages.findLast((m) => m.role === "assistant" && !m.final)
+        if (activeAssistant) {
+          const t = new Date(activeAssistant.createdAt)
+          t.setMilliseconds(t.getMilliseconds() - 1)
+          createdAt = t.toISOString()
+        }
+      }
+
+      const message: ConversationMessage = {
+        role: messageData.role,
+        final: true,
+        parts: [...messageData.parts],
+        createdAt,
+        updatedAt: now.toISOString(),
+      }
+
       const updatedMessages = [...state.messages, message]
       const processedMessages = normalizeMessagesForUI(updatedMessages)
 
