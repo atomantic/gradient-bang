@@ -156,6 +156,8 @@ export const Conversation: React.FC<ConversationProps> = memo(
     const debugLLMContextLoading = useGameStore((s) => s.debugLLMContextLoading)
     const debugLLMContext = useGameStore((s) => s.debugLLMContext)
     const [, copyToClipboard] = useCopyToClipboard()
+    const copyToClipboardRef = useRef(copyToClipboard)
+    copyToClipboardRef.current = copyToClipboard
     const [copied, setCopied] = useState(false)
 
     const handleDumpContext = useCallback(() => {
@@ -168,12 +170,12 @@ export const Conversation: React.FC<ConversationProps> = memo(
 
     useEffect(() => {
       if (debugLLMContext && !debugLLMContextLoading) {
-        copyToClipboard(debugLLMContext)
+        copyToClipboardRef.current(debugLLMContext)
         setCopied(true)
         const timer = setTimeout(() => setCopied(false), 2000)
         return () => clearTimeout(timer)
       }
-    }, [debugLLMContext, debugLLMContextLoading, copyToClipboard])
+    }, [debugLLMContext, debugLLMContextLoading])
 
     const { isConnected } = usePipecatConnectionState()
 
