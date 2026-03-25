@@ -13,7 +13,7 @@ Environment Variables:
     # Task Agent LLM (TaskAgent - with thinking mode)
     TASK_LLM_PROVIDER: google, anthropic, openai (default: google)
     TASK_LLM_MODEL: Model name (default: gemini-2.5-flash)
-    TASK_LLM_THINKING_BUDGET: Token budget for thinking (default: 16384)
+    TASK_LLM_THINKING_BUDGET: Token budget for thinking (default: 4096)
     TASK_LLM_FUNCTION_CALL_TIMEOUT_SECS: Tool call timeout in seconds (default: 20)
 
     # UI Agent LLM (UI agent branch - lightweight, no thinking by default)
@@ -426,14 +426,14 @@ def get_voice_llm_config() -> LLMServiceConfig:
     model = os.getenv("VOICE_LLM_MODEL", default_models[provider])
 
     # Parse thinking budget
-    thinking_budget_str = os.getenv("VOICE_LLM_THINKING_BUDGET", "4096")
+    thinking_budget_str = os.getenv("VOICE_LLM_THINKING_BUDGET", "0")
     try:
         thinking_budget = int(thinking_budget_str)
     except ValueError:
         logger.warning(
-            f"Invalid VOICE_LLM_THINKING_BUDGET '{thinking_budget_str}', using default 4096"
+            f"Invalid VOICE_LLM_THINKING_BUDGET '{thinking_budget_str}', using default 0"
         )
-        thinking_budget = 4096
+        thinking_budget = 0
 
     thinking = None
     if thinking_budget > 0:
@@ -540,7 +540,7 @@ def get_ui_agent_llm_config() -> LLMServiceConfig:
     Environment Variables:
         UI_AGENT_LLM_PROVIDER: google, anthropic, openai (default: google)
         UI_AGENT_LLM_MODEL: Model name (default: gemini-2.5-flash)
-        UI_AGENT_LLM_THINKING_BUDGET: Token budget for thinking (default: 4096)
+        UI_AGENT_LLM_THINKING_BUDGET: Token budget for thinking (default: 0)
 
     Returns:
         LLMServiceConfig for UI agent.
@@ -561,12 +561,12 @@ def get_ui_agent_llm_config() -> LLMServiceConfig:
     }
     model = os.getenv("UI_AGENT_LLM_MODEL", default_models[provider])
 
-    thinking_budget_str = os.getenv("UI_AGENT_LLM_THINKING_BUDGET", "4096")
+    thinking_budget_str = os.getenv("UI_AGENT_LLM_THINKING_BUDGET", "0")
     try:
         thinking_budget = int(thinking_budget_str)
     except ValueError:
         logger.warning(
-            f"Invalid UI_AGENT_LLM_THINKING_BUDGET '{thinking_budget_str}', using default 4096"
+            f"Invalid UI_AGENT_LLM_THINKING_BUDGET '{thinking_budget_str}', using default 0"
         )
         thinking_budget = 0
 

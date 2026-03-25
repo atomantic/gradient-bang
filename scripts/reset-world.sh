@@ -115,14 +115,29 @@ echo "[reset-world] World Reset"
 echo "============================================================"
 echo "  Mode         : $(if [[ "$IS_CLOUD" == true ]]; then echo "CLOUD"; else echo "local"; fi)"
 echo "  Env file     : $ENV_FILE"
+echo "  Supabase URL : ${SUPABASE_URL:-<not set>}"
 echo "  Sector count : $SECTOR_COUNT"
 echo "  Seed         : ${SEED:-<random>}"
 echo "============================================================"
 echo ""
 
-# Safety prompt for cloud
+# Safety prompt — always confirm before wiping data
 if [[ "$IS_CLOUD" == true ]]; then
-  read -r -p "[reset-world] WARNING: This will wipe all game data on PRODUCTION. Type 'yes' to continue: " confirm
+  # Extract project ref from URL for easy visual confirmation
+  PROJECT_REF=$(echo "${SUPABASE_URL:-}" | sed -n 's|https://\([^.]*\)\.supabase\.co.*|\1|p')
+  echo "[reset-world] WARNING: This will wipe all game data on cloud project:"
+  echo ""
+  echo "    Project ref : ${PROJECT_REF:-<unknown>}"
+  echo "    URL         : ${SUPABASE_URL:-<not set>}"
+  echo ""
+  read -r -p "[reset-world] Type the project ref to confirm: " confirm
+  if [[ "$confirm" != "$PROJECT_REF" ]]; then
+    echo "[reset-world] Aborted. (expected '$PROJECT_REF', got '$confirm')"
+    exit 0
+  fi
+  echo ""
+else
+  read -r -p "[reset-world] This will wipe all local game data. Type 'yes' to continue: " confirm
   if [[ "$confirm" != "yes" ]]; then
     echo "[reset-world] Aborted."
     exit 0
