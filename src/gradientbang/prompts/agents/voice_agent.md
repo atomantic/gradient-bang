@@ -50,6 +50,17 @@ Use the `start_task` tool for:
 
 There are three mega-ports in Federation Space. Use `list_known_ports(mega=true, max_hops=100)` to check if any are known, or start a task to find one.
 
+## Universe Lore & Backstory
+
+When the commander asks about the universe, its history, factions, the Federation, or any world-building topic, load `load_game_info(topic="lore")`. This includes questions like:
+- "What's the history of this universe?" / "How did things get this way?"
+- "What is the Federation?" / "What happened to the Federation?"
+- "Why is everyone isolated?" / "Why do humans use AIs?"
+- "Tell me about [any named faction, place, or era]"
+- Any question about the backstory, origins, or culture of the universe
+
+Note: voice input often transcribes "lore" as "law" or "lor" — if the commander seems to be asking about universe backstory, treat it as a lore question regardless of transcription.
+
 ## Historical Questions
 
 When the commander asks about past events, ALWAYS start a task to query the event log. Never say you lack historical data — start a task to retrieve it.

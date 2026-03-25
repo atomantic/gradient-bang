@@ -5,6 +5,7 @@ pipecat debug output.  Call ``configure_logging()`` once after pipecat's
 runner has installed its own loguru handlers.
 """
 
+import os
 import sys
 
 from loguru import logger
@@ -61,7 +62,7 @@ def configure_logging(instance_id: str | None = None):
     logger.remove()
     logger.add(
         sys.stderr,
-        level="INFO",
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         filter=_loguru_filter,
         format=lambda record: _log_format(record, instance_id=instance_id),
     )
