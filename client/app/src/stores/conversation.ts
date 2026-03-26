@@ -9,15 +9,8 @@ import {
   type FunctionCallData,
 } from "@/types/conversation"
 
-const TURN_MARKER_REGEX = /[✓○◐]/g
-
-const stripTurnMarkers = (text: string): string => {
-  return text.replace(TURN_MARKER_REGEX, "")
-}
-
 interface ConversationState {
   messages: ConversationMessage[]
-  messageCallbacks: Map<string, (message: ConversationMessage) => void>
   // Simple state per message for tracking spoken position
   botOutputMessageState: Map<string, BotOutputMessageCursor>
   isThinking: boolean
@@ -204,12 +197,12 @@ const normalizeMessagesForUI = (messages: ConversationMessage[]): ConversationMe
   )
 }
 
+// Module-level callback registry — mutations here do not trigger store re-renders
+const messageCallbacks = new Map<string, (message: ConversationMessage) => void>()
+
 // Helper function to call all registered callbacks
-const callAllMessageCallbacks = (
-  callbacks: Map<string, (message: ConversationMessage) => void>,
-  message: ConversationMessage
-) => {
-  callbacks.forEach((callback) => {
+const callAllMessageCallbacks = (message: ConversationMessage) => {
+  messageCallbacks.forEach((callback) => {
     try {
       callback(message)
     } catch (error) {
@@ -220,23 +213,16 @@ const callAllMessageCallbacks = (
 
 export const useConversationStore = create<ConversationState>()((set, get) => ({
   messages: [],
-  messageCallbacks: new Map(),
   botOutputMessageState: new Map(),
   isThinking: false,
 
-  registerMessageCallback: (id, callback) =>
-    set((state) => {
-      const newState = { ...state }
-      newState.messageCallbacks.set(id, callback || (() => {}))
-      return newState
-    }),
+  registerMessageCallback: (id, callback) => {
+    messageCallbacks.set(id, callback || (() => {}))
+  },
 
-  unregisterMessageCallback: (id) =>
-    set((state) => {
-      const newState = { ...state }
-      newState.messageCallbacks.delete(id)
-      return newState
-    }),
+  unregisterMessageCallback: (id) => {
+    messageCallbacks.delete(id)
+  },
 
   clearMessages: () =>
     set({
@@ -256,7 +242,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
       const updatedMessages = [...state.messages, message]
       const processedMessages = normalizeMessagesForUI(updatedMessages)
 
-      callAllMessageCallbacks(state.messageCallbacks, message)
+      callAllMessageCallbacks(message)
       return { messages: processedMessages }
     })
   },
@@ -277,7 +263,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
       messages[lastMessageIndex] = updatedMessage
       const processedMessages = normalizeMessagesForUI(messages)
 
-      callAllMessageCallbacks(state.messageCallbacks, updatedMessage)
+      callAllMessageCallbacks(updatedMessage)
       return { messages: processedMessages }
     })
   },
@@ -310,7 +296,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
           final: true,
           updatedAt: new Date().toISOString(),
         }
-        callAllMessageCallbacks(state.messageCallbacks, messages[lastMessageIndex])
+        callAllMessageCallbacks(messages[lastMessageIndex])
       }
 
       const processedMessages = normalizeMessagesForUI(messages)
@@ -340,19 +326,32 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
 
   injectMessage: (messageData) => {
     const now = new Date()
-    const message: ConversationMessage = {
-      role: messageData.role,
-      final: true,
-      parts: [...messageData.parts],
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    }
 
     set((state) => {
+      // If there's an active (non-final) assistant message, place injected
+      // message just before it so sorting keeps the active response at the bottom.
+      let createdAt = now.toISOString()
+      if (messageData.role !== "assistant") {
+        const activeAssistant = state.messages.findLast((m) => m.role === "assistant" && !m.final)
+        if (activeAssistant) {
+          const t = new Date(activeAssistant.createdAt)
+          t.setMilliseconds(t.getMilliseconds() - 1)
+          createdAt = t.toISOString()
+        }
+      }
+
+      const message: ConversationMessage = {
+        role: messageData.role,
+        final: true,
+        parts: [...messageData.parts],
+        createdAt,
+        updatedAt: now.toISOString(),
+      }
+
       const updatedMessages = [...state.messages, message]
       const processedMessages = normalizeMessagesForUI(updatedMessages)
 
-      callAllMessageCallbacks(state.messageCallbacks, message)
+      callAllMessageCallbacks(message)
       return { messages: processedMessages }
     })
   },
@@ -394,7 +393,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
 
         const processedMessages = normalizeMessagesForUI(messages)
 
-        callAllMessageCallbacks(state.messageCallbacks, updatedMessage)
+        callAllMessageCallbacks(updatedMessage)
         return { messages: processedMessages }
       }
 
@@ -418,17 +417,13 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
 
       const updatedMessages = [...messages, newMessage]
       const processedMessages = normalizeMessagesForUI(updatedMessages)
-      callAllMessageCallbacks(state.messageCallbacks, newMessage)
+      callAllMessageCallbacks(newMessage)
       return { messages: processedMessages }
     })
   },
 
   updateAssistantBotOutput: (text, final, spoken, aggregatedBy) => {
     const now = new Date()
-
-    const filteredText = stripTurnMarkers(text)
-    // Skip if filtering removed all content
-    if (!filteredText) return
 
     set((state) => {
       const messages = [...state.messages]
@@ -552,7 +547,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
         }
       }
 
-      const processedMessages = mergeMessages(messages.sort(sortByCreatedAt))
+      const processedMessages = normalizeMessagesForUI(messages)
 
       return {
         messages: processedMessages,
@@ -589,7 +584,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
 
       const updatedMessages = [...state.messages, message]
       const processedMessages = normalizeMessagesForUI(updatedMessages)
-      callAllMessageCallbacks(state.messageCallbacks, message)
+      callAllMessageCallbacks(message)
       return { messages: processedMessages, isThinking: true }
     })
   },
@@ -617,7 +612,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
       messages[index] = updated
 
       const processedMessages = normalizeMessagesForUI(messages)
-      callAllMessageCallbacks(state.messageCallbacks, updated)
+      callAllMessageCallbacks(updated)
       return { messages: processedMessages }
     })
     return found
@@ -648,7 +643,7 @@ export const useConversationStore = create<ConversationState>()((set, get) => ({
       messages[index] = updated
 
       const processedMessages = normalizeMessagesForUI(messages)
-      callAllMessageCallbacks(state.messageCallbacks, updated)
+      callAllMessageCallbacks(updated)
       return { messages: processedMessages }
     })
     return found

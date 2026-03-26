@@ -57,17 +57,17 @@ importers:
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@pipecat-ai/client-js':
-        specifier: ^1.6.0
-        version: 1.6.0
+        specifier: ^1.7.0
+        version: 1.7.0
       '@pipecat-ai/client-react':
-        specifier: ^1.1.0
-        version: 1.1.0(@babel/core@7.28.6)(@babel/template@7.28.6)(@pipecat-ai/client-js@1.6.0)(@types/react@19.2.9)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+        specifier: ^1.2.0
+        version: 1.2.0(@babel/core@7.28.6)(@babel/template@7.28.6)(@pipecat-ai/client-js@1.7.0)(@types/react@19.2.9)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@pipecat-ai/daily-transport':
-        specifier: ^1.6.0
-        version: 1.6.0(@pipecat-ai/client-js@1.6.0)
+        specifier: ^1.6.1
+        version: 1.6.1(@pipecat-ai/client-js@1.7.0)
       '@pipecat-ai/small-webrtc-transport':
-        specifier: 1.9.0
-        version: 1.9.0(@pipecat-ai/client-js@1.6.0)
+        specifier: 1.10.0
+        version: 1.10.0(@pipecat-ai/client-js@1.7.0)
       '@radix-ui/react-collapsible':
         specifier: ^1.1.12
         version: 1.1.12(@types/react-dom@19.2.3(@types/react@19.2.9))(@types/react@19.2.9)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -894,9 +894,9 @@ packages:
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
 
-  '@daily-co/daily-js@0.86.0':
-    resolution: {integrity: sha512-x4ZoThZHGC9Qiq1CrMEd5oe9WhisT7+NPn/HsbS9ZT1HsPX5eIIaUW3WOim0p3DFv1JlhCxcwYZPGX3fXUPEaw==}
-    engines: {node: '>=10.0.0'}
+  '@daily-co/daily-js@0.89.1':
+    resolution: {integrity: sha512-1RnXtzg8aeJYLhmMjRK9mnsWRljwsM2OUBJH5onpAOFIjHPSA7h03DSCd8D/YMyrpX8jQHcVMDSWOhcj+tZD/A==}
+    engines: {node: '>=22.14.0'}
 
   '@dimforge/rapier3d-compat@0.12.0':
     resolution: {integrity: sha512-uekIGetywIgopfD97oDL5PfeezkFpNhwlzlaEYNOA0N6ghdsOvh/HYjSMek5Q2O1PYvRSDFcqFVJl4r4ZBwOow==}
@@ -1468,25 +1468,25 @@ packages:
       react: '>= 16.8'
       react-dom: '>= 16.8'
 
-  '@pipecat-ai/client-js@1.6.0':
-    resolution: {integrity: sha512-riG/p9MDhy/mVo8x3ZGRdE55cgVgIcqkWsJcXb11CtG4j7xAszwcMdv7IOzRtTMSCD/2s7rwuv7Yi/D8bpDzNA==}
+  '@pipecat-ai/client-js@1.7.0':
+    resolution: {integrity: sha512-52RoctPc1EdzlJwy/uP3dmmcVPDF24SZyHEM0mOMK2EHvo6sN0MzM3h4rv6snyEdxBZYqS53eQMVU2L7nub2uw==}
 
-  '@pipecat-ai/client-react@1.1.0':
-    resolution: {integrity: sha512-OfXd2vd8ooOE1I/7SwVnSPXz2UC/L2GlAMYVO40ClzoeeJidywcNfbqTO2ZDxcxvFf15tv4O9aAM3uPo4Ou13A==}
+  '@pipecat-ai/client-react@1.2.0':
+    resolution: {integrity: sha512-rR3HAPs7207rmeY+mSDVEZRS5XxtuvNSCc1OZCAUkTikh8w3swX03kdua1I3dlJDwmTDpp+BhdEYI2hkGdghdQ==}
     peerDependencies:
       '@pipecat-ai/client-js': '*'
       react: '>=18'
       react-dom: '>=18'
 
-  '@pipecat-ai/daily-transport@1.6.0':
-    resolution: {integrity: sha512-QmJTgh2rncP3APLwWbM9N/WYMip0a1biTXP7IJ/WZqx0VNuN7S8wbNl7mmzNIMyxReIaG7soBwVfB0sOd389tQ==}
+  '@pipecat-ai/daily-transport@1.6.1':
+    resolution: {integrity: sha512-CVUFm7NVM96HluuTorMUU3fnX4vpJXlXcOAIxMsMJfE3/oVvASvMPJ08Sts1BygE2id2s1A08GCnsChaVtW6Xw==}
     peerDependencies:
-      '@pipecat-ai/client-js': ~1.6.0
+      '@pipecat-ai/client-js': ~1.7.0
 
-  '@pipecat-ai/small-webrtc-transport@1.9.0':
-    resolution: {integrity: sha512-7bfe+7Qcd/2CS1Lg6h3QDJOYtEZgZtFxJ9Atg6r8IhGw7fUzB4y7l9r1FFXbTxzpSFl9GvkFflXP2vuSCD8Uzw==}
+  '@pipecat-ai/small-webrtc-transport@1.10.0':
+    resolution: {integrity: sha512-cQYtmCBW1LLVmpmn03xUt+dB6CHBwnK7rv9BH7D1Q0VQOu2uNYM7Ay1b9J8Z71hLQj0YGu20hPhBKt1cvn8/Eg==}
     peerDependencies:
-      '@pipecat-ai/client-js': ~1.6.0
+      '@pipecat-ai/client-js': ~1.7.0
 
   '@pkgr/core@0.2.9':
     resolution: {integrity: sha512-QNqXyfVS2wm9hweSYD2O7F0G06uurj9kZ96TRQE5Y9hU7+tgdZwIkbAKc5Ocy1HxEY2kuDQa6cQ1WRs/O5LFKA==}
@@ -7526,7 +7526,7 @@ snapshots:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
 
-  '@daily-co/daily-js@0.86.0':
+  '@daily-co/daily-js@0.89.1':
     dependencies:
       '@babel/runtime': 7.28.6
       '@sentry/browser': 8.55.0
@@ -8084,7 +8084,7 @@ snapshots:
       react: 19.2.3
       react-dom: 19.2.3(react@19.2.3)
 
-  '@pipecat-ai/client-js@1.6.0':
+  '@pipecat-ai/client-js@1.7.0':
     dependencies:
       '@types/events': 3.0.3
       bowser: 2.13.1
@@ -8093,9 +8093,9 @@ snapshots:
       typed-emitter: 2.1.0
       uuid: 10.0.0
 
-  '@pipecat-ai/client-react@1.1.0(@babel/core@7.28.6)(@babel/template@7.28.6)(@pipecat-ai/client-js@1.6.0)(@types/react@19.2.9)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)':
+  '@pipecat-ai/client-react@1.2.0(@babel/core@7.28.6)(@babel/template@7.28.6)(@pipecat-ai/client-js@1.7.0)(@types/react@19.2.9)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)':
     dependencies:
-      '@pipecat-ai/client-js': 1.6.0
+      '@pipecat-ai/client-js': 1.7.0
       jotai: 2.16.2(@babel/core@7.28.6)(@babel/template@7.28.6)(@types/react@19.2.9)(react@19.2.3)
       react: 19.2.3
       react-dom: 19.2.3(react@19.2.3)
@@ -8104,15 +8104,15 @@ snapshots:
       - '@babel/template'
       - '@types/react'
 
-  '@pipecat-ai/daily-transport@1.6.0(@pipecat-ai/client-js@1.6.0)':
+  '@pipecat-ai/daily-transport@1.6.1(@pipecat-ai/client-js@1.7.0)':
     dependencies:
-      '@daily-co/daily-js': 0.86.0
-      '@pipecat-ai/client-js': 1.6.0
+      '@daily-co/daily-js': 0.89.1
+      '@pipecat-ai/client-js': 1.7.0
 
-  '@pipecat-ai/small-webrtc-transport@1.9.0(@pipecat-ai/client-js@1.6.0)':
+  '@pipecat-ai/small-webrtc-transport@1.10.0(@pipecat-ai/client-js@1.7.0)':
     dependencies:
-      '@daily-co/daily-js': 0.86.0
-      '@pipecat-ai/client-js': 1.6.0
+      '@daily-co/daily-js': 0.89.1
+      '@pipecat-ai/client-js': 1.7.0
       dequal: 2.0.3
       lodash: 4.17.23
 

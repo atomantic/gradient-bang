@@ -38,6 +38,7 @@ AVAILABLE_TOPICS = [
     "ships",
     "event_logs",
     "map_legend",
+    "lore",
 ]
 
 

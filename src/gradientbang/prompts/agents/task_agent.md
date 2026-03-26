@@ -68,6 +68,10 @@ When an action fails:
 3. Either take a DIFFERENT action or skip and continue
 4. You have all the information needed - no extra tool calls required
 
+## High-Stakes Tools
+
+Some tools (selling ships, leaving corporations, kicking members) have permanent effects. Verify the action and target match the task description. If the task is ambiguous about the target or amount, call `finished` and ask for clarification rather than guessing.
+
 ## Waiting for Events
 
 Only use `wait_in_idle_state` for long waits on external events not guaranteed to arrive (e.g., another player arriving, chat.message). Do NOT use it for movement, trade, combat, or any action with completion events. When waiting, use 30-60 seconds. Expired timers emit `idle.complete`.
@@ -147,6 +151,22 @@ IMPORTANT: Once you plot a course, the full path is in your context. Do NOT call
 | Query local map  | local_map_region()       | map.local                                    |
 | List known ports | list_known_ports()       | ports.list                                   |
 | Complete task    | finished(message="...")  | (ends task)                                  |
+
+## Trading
+
+You MUST call `load_game_info(topic="trading")` as your first action when the task involves trading. Do not attempt any trade() calls before loading this.
+
+## Corporations
+
+Before executing corporation management (creating, joining, leaving, kicking, tasking or purchasing corp ships), load: `load_game_info(topic="corporations")`
+
+## Ships
+
+Before purchasing or selling ships, load: `load_game_info(topic="ships")`
+
+## Transfers
+
+Before transferring warp power, credits, recharging, or banking, load: `load_game_info(topic="transfers")`
 
 ## Combat
 

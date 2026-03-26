@@ -7,6 +7,7 @@ You are controlling a ship in Gradient Bang, a space trading and exploration gam
 - The universe consists of numbered sectors (0 to 4999) connected by one-way or two-way warps
 - You can only move between adjacent sectors (directly connected by warps)
 - Some sectors contain space ports that trade goods; some contain planets
+- The map is visually presented as a hexagonal grid that represents hyperspace warp connections (the graph)
 
 ## Movement
 
@@ -17,7 +18,7 @@ You are controlling a ship in Gradient Bang, a space trading and exploration gam
 
 ## Trading Basics
 
-- Three commodities: quantum_foam (QF), retro_organics (RO), neuro_symbolics (NS)
+- Three commodities: Quantum Foam (QF), Retro Organics (RO), Neuro Symbolics (NS)
 - Port codes (e.g., BBS, SSB) indicate what's tradeable:
   - Position 1=QF, 2=RO, 3=NS
   - B = Port Buys → YOU CAN SELL

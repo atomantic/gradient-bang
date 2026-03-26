@@ -227,12 +227,6 @@ scripts/reset-world.sh --env .env.supabase 1000 42
 scripts/reset-world.sh --env .env.cloud 1000 42
 ```
 
-### Running integration tests
-
-```bash
-set -a && source .env.supabase && set +a && USE_SUPABASE_TESTS=1 uv run pytest tests/integration -v
-```
-
 ### Generate universe map visualization
 
 ```bash
@@ -324,19 +318,13 @@ gb start
 
 ## Running tests
 
+### Edge function tests (Deno)
+
 Integration tests for the game server (edge functions) live in `deployment/supabase/functions/tests/`.
 
-### Dependencies
-
-- **Docker**: The test runner spins up an isolated Supabase instance
-- **Deno**: Tests run under `deno test` (installed automatically by the Supabase CLI)
-- **Node.js / npx**: Used to invoke the Supabase CLI
+**Dependencies:** Docker, Node.js / npx (Deno is installed automatically by the Supabase CLI).
 
 No `.env` file is needed — the test runner creates its own isolated Supabase stack on ephemeral ports and extracts credentials automatically.
-
-### Run tests
-
-> **Note:** stop any running supabase instances first `npx supabase stop`
 
 ```bash
 bash deployment/supabase/functions/tests/run_tests.sh
@@ -349,17 +337,40 @@ The runner starts an isolated Supabase instance, runs the tests with coverage, p
 Python tests live in `tests/` and use pytest markers to categorize them.
 
 ```bash
-# Run all Python tests
-uv run pytest tests/ -v
+# Run all unit tests (no server needed)
+uv run pytest -m unit -v
 
 # Run only LLM behavior tests (context summarization, etc.)
-uv run pytest tests/ -m llm -v
-
-# Run integration tests (requires running server)
-set -a && source .env.supabase && set +a && USE_SUPABASE_TESTS=1 uv run pytest tests/integration -v
+uv run pytest -m llm -v
 ```
 
-Available markers: `unit`, `integration`, `requires_server`, `stress`, `live_api`, `llm`.
+Available markers: `unit`, `llm`, `integration`, `stress`, `live_api`.
+
+### Unit tests
+
+The `tests/unit/` directory includes unit tests for the bot's agent layer — EventRelay routing, VoiceAgent tool registration, TaskAgent construction, and EventRelay↔VoiceAgent integration tests that wire real objects together with mock external boundaries.
+
+```bash
+# Run all unit tests
+uv run pytest -m unit -v
+
+# Run only the relay↔voice integration tests
+uv run pytest tests/unit/test_voice_relay_integration.py -v
+```
+
+### Python integration tests (requires DB)
+
+Python integration tests need a seeded Supabase database. An all-in-one script handles the lifecycle: it spins up an isolated Supabase instance on different ports (54421+), seeds it via `test_reset`, runs `pytest -m integration`, and tears everything down. The dev database is never touched.
+
+```bash
+# Run all integration tests
+bash scripts/run-integration-tests.sh
+
+# Pass extra pytest args
+bash scripts/run-integration-tests.sh -v -k "test_movement"
+```
+
+Integration tests are automatically skipped when running `uv run pytest` directly (without the script).
 
 ---
 
@@ -577,31 +588,77 @@ pnpm run dev
 
 ### Bot (`.env.bot`)
 
-| Variable                        | Required | Default                | Description                                                                                                        |
-| ------------------------------- | -------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `DEEPGRAM_API_KEY`              | Yes      | —                      | [Deepgram](https://console.deepgram.com) API key for speech-to-text                                                |
-| `CARTESIA_API_KEY`              | Yes      | —                      | [Cartesia](https://play.cartesia.ai) API key for text-to-speech                                                    |
-| `GOOGLE_API_KEY`                | Yes      | —                      | [Google AI Studio](https://aistudio.google.com/apikey) key for Gemini LLM                                          |
-| `ANTHROPIC_API_KEY`             | No       | —                      | [Anthropic](https://console.anthropic.com) key for Claude LLM (task agent)                                         |
-| `SUPABASE_URL`                  | Yes      | —                      | Supabase project URL                                                                                               |
-| `SUPABASE_SERVICE_ROLE_KEY`     | Yes      | —                      | Service role key for DB access                                                                                     |
-| `EDGE_API_TOKEN`                | Yes      | —                      | Token for authenticating edge function calls                                                                       |
-| `DAILY_API_KEY`                 | No       | —                      | [Daily](https://www.daily.co/) API key (required for Daily transport)                                              |
-| `LOCAL_API_POSTGRES_URL`        | No       | —                      | Session pooler connection string to run edge functions locally inside the bot, bypassing Supabase network overhead |
-| `BOT_USE_KRISP`                 | No       | `0`                    | Enable Krisp noise cancellation (`1` for production, `0` for local dev)                                            |
-| `BOT_TEST_CHARACTER_ID`         | No       | —                      | Hardcoded character ID for testing                                                                                 |
-| `BOT_TEST_CHARACTER_NAME`       | No       | —                      | Hardcoded character name for testing                                                                               |
-| `BOT_TEST_NPC_CHARACTER_NAME`   | No       | —                      | Hardcoded NPC name for testing                                                                                     |
-| `VOICE_LLM_PROVIDER`            | Yes      | —                      | Voice LLM provider (`google`, `anthropic`, `openai`)                                                               |
-| `VOICE_LLM_MODEL`               | Yes      | —                      | Voice LLM model name                                                                                               |
-| `TASK_LLM_PROVIDER`             | Yes      | —                      | Task agent LLM provider                                                                                            |
-| `TASK_LLM_MODEL`                | Yes      | —                      | Task agent LLM model name                                                                                          |
-| `TASK_LLM_THINKING_BUDGET`      | No       | —                      | Token budget for task agent extended thinking                                                                      |
-| `UI_AGENT_LLM_PROVIDER`         | Yes      | —                      | UI agent LLM provider                                                                                              |
-| `UI_AGENT_LLM_MODEL`            | Yes      | —                      | UI agent LLM model name                                                                                            |
-| `UI_AGENT_LLM_THINKING_BUDGET`  | No       | —                      | Token budget for UI agent thinking                                                                                 |
-| `UI_AGENT_SHIPS_CACHE_TTL_SECS` | No       | `60`                   | Ships list cache TTL for UI agent (seconds)                                                                        |
-| `TOKEN_USAGE_LOG`               | No       | `logs/token_usage.csv` | Path for token usage metrics CSV                                                                                   |
+#### API keys
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `DEEPGRAM_API_KEY` | Yes | [Deepgram](https://console.deepgram.com) API key for speech-to-text |
+| `CARTESIA_API_KEY` | Yes | [Cartesia](https://play.cartesia.ai) API key for text-to-speech |
+| `GOOGLE_API_KEY` | Yes | [Google AI Studio](https://aistudio.google.com/apikey) key for Gemini LLM |
+| `ANTHROPIC_API_KEY` | No | [Anthropic](https://console.anthropic.com) key for Claude LLM |
+| `OPENAI_API_KEY` | No | [OpenAI](https://platform.openai.com) key (when using OpenAI as LLM provider) |
+
+#### Supabase & connectivity
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `SUPABASE_URL` | Yes | — | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | — | Service role key for DB access |
+| `EDGE_API_TOKEN` | Yes | — | Token for authenticating edge function calls |
+| `DAILY_API_KEY` | No | — | [Daily](https://www.daily.co/) API key (required for Daily transport) |
+| `LOCAL_API_POSTGRES_URL` | No | — | Session pooler connection string to run edge functions locally inside the bot, bypassing Supabase network overhead |
+
+#### LLM configuration
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `VOICE_LLM_PROVIDER` | Yes | — | Voice LLM provider (`google`, `anthropic`, `openai`) |
+| `VOICE_LLM_MODEL` | Yes | — | Voice LLM model name |
+| `VOICE_LLM_THINKING_BUDGET` | No | `0` | Token budget for voice agent extended thinking |
+| `VOICE_LLM_FUNCTION_CALL_TIMEOUT_SECS` | No | `20` | Voice agent tool call timeout (seconds) |
+| `TASK_LLM_PROVIDER` | Yes | — | Task agent LLM provider |
+| `TASK_LLM_MODEL` | Yes | — | Task agent LLM model name |
+| `TASK_LLM_THINKING_BUDGET` | No | `4096` | Token budget for task agent extended thinking |
+| `TASK_LLM_FUNCTION_CALL_TIMEOUT_SECS` | No | `20` | Task agent tool call timeout (seconds) |
+| `TASK_AGENT_TIMEOUT` | No | — | Max task agent lifetime in seconds; cancelled on expiry (e.g. `1800` for 30 min) |
+| `UI_AGENT_LLM_PROVIDER` | Yes | — | UI agent LLM provider |
+| `UI_AGENT_LLM_MODEL` | Yes | — | UI agent LLM model name |
+| `UI_AGENT_LLM_THINKING_BUDGET` | No | `0` | Token budget for UI agent thinking |
+| `CONTEXT_SUMMARIZATION_MESSAGE_LIMIT` | No | `200` | Max unsummarized messages before context summarization |
+
+#### UI agent tuning
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `UI_AGENT_STATUS_TIMEOUT_SECS` | `10` | Status query timeout (seconds) |
+| `UI_AGENT_PORTS_LIST_TIMEOUT_SECS` | `15` | Ports list timeout (seconds) |
+| `UI_AGENT_SHIPS_LIST_TIMEOUT_SECS` | `15` | Ships list timeout (seconds) |
+| `UI_AGENT_COURSE_PLOT_TIMEOUT_SECS` | `25` | Course plot timeout (seconds) |
+| `UI_AGENT_PORTS_LIST_STALE_SECS` | `60` | Ports list staleness threshold (seconds) |
+| `UI_AGENT_INTENT_REQUEST_DELAY_SECS` | `2.0` | Intent request delay (seconds) |
+| `UI_AGENT_SHIPS_CACHE_TTL_SECS` | `60` | Ships list cache TTL (seconds) |
+
+#### Testing & debug
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `BOT_USE_KRISP` | `0` | Enable Krisp noise cancellation (`1` for production, `0` for local dev) |
+| `BOT_TEST_CHARACTER_ID` | — | Hardcoded character ID for testing |
+| `BOT_TEST_CHARACTER_NAME` | — | Hardcoded character name for testing |
+| `BOT_TEST_NPC_CHARACTER_NAME` | — | Hardcoded NPC name for testing |
+| `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, etc.) |
+| `TOKEN_USAGE_LOG` | — | Path for token usage metrics CSV |
+
+#### Optional integrations
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `WANDB_API_KEY` | — | [Weights & Biases](https://wandb.ai) API key for Weave tracing |
+| `WEAVE_PROJECT` | `gradientbang` | Weave project name |
+| `SMART_TURN_S3_BUCKET` | — | S3 bucket for smart turn audio |
+| `AWS_ACCESS_KEY_ID` | — | AWS access key (for S3 smart turn) |
+| `AWS_SECRET_ACCESS_KEY` | — | AWS secret key (for S3 smart turn) |
+| `AWS_REGION` | `us-east-1` | AWS region |
 
 ---
 
