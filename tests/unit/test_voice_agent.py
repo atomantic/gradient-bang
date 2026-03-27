@@ -288,6 +288,45 @@ class TestDeferredEventBatching:
         assert all(f.run_llm is False for f in appends)
         assert len(runs) == 1, f"Expected 1 LLMRunFrame but got {len(runs)}: {runs}"
 
+    async def test_queue_frame_after_tools_coalesces_mixed_sources(self):
+        """Frames from different sources (EventRelay + bus protocol) coalesce to 1 LLMRunFrame.
+
+        EventRelay uses queue_frame_after_tools directly (not inject_context).
+        When a status.snapshot (VOICE_AGENT inference rule, run_llm=True) and a
+        task.completed bus message both arrive in the same asyncio tick with no
+        tool inflight, both previously triggered separate inferences.
+        """
+        import asyncio
+
+        from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+
+        agent = _make_voice_agent()
+        agent.queue_frame = AsyncMock()
+
+        # Simulate EventRelay delivering status.snapshot (run_llm=True) and
+        # inject_context delivering task.completed (run_llm=True) simultaneously
+        event_relay_frame = LLMMessagesAppendFrame(
+            messages=[{"role": "user", "content": "<event name=\"status.snapshot\">...</event>"}],
+            run_llm=True,
+        )
+        task_completed_frame = LLMMessagesAppendFrame(
+            messages=[{"role": "user", "content": "<event name=\"task.completed\">...</event>"}],
+            run_llm=True,
+        )
+        await asyncio.gather(
+            agent.queue_frame_after_tools(event_relay_frame),
+            agent.queue_frame_after_tools(task_completed_frame),
+        )
+        await asyncio.sleep(0.01)
+
+        flushed = [call.args[0] for call in agent.queue_frame.call_args_list]
+        appends = [f for f in flushed if isinstance(f, LLMMessagesAppendFrame)]
+        runs = [f for f in flushed if isinstance(f, LLMRunFrame)]
+
+        assert len(appends) == 2
+        assert all(f.run_llm is False for f in appends)
+        assert len(runs) == 1, f"Expected 1 LLMRunFrame but got {len(runs)}: {runs}"
+
     async def test_process_deferred_tool_frames_hook(self):
         """process_deferred_tool_frames coalesces run_llm and appends LLMRunFrame."""
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame

@@ -171,26 +171,38 @@ class VoiceAgent(LLMAgent):
         return request_id in self._voice_agent_request_ids
 
     async def inject_context(self, messages: list, *, run_llm: bool = True) -> None:
-        """Inject messages into LLM context, deferring if tool calls are active.
+        """Inject messages into LLM context, deferring if tool calls are active."""
+        await self.queue_frame_after_tools(
+            LLMMessagesAppendFrame(messages=messages, run_llm=run_llm)
+        )
 
-        When tool calls are inflight the frame is deferred via the normal
-        ``queue_frame_after_tools`` path so ``process_deferred_tool_frames``
-        can coalesce multiple events into a single inference on flush.
+    async def queue_frame_after_tools(self, frame) -> None:
+        """Queue a frame, coalescing inference triggers when no tool is active.
 
-        When no tool calls are inflight the append is sent immediately with
-        ``run_llm=False``, and a single deferred ``LLMRunFrame`` is scheduled
-        via ``asyncio.ensure_future``.  Rapid-fire calls (e.g. three corp-ship
-        tasks completing simultaneously) share the same pending task, so only
-        one ``LLMRunFrame`` is ever queued per asyncio iteration.
+        Extends the base implementation with rapid-fire coalescing for the
+        no-tool-inflight case.  When multiple ``LLMMessagesAppendFrame`` frames
+        with ``run_llm=True`` arrive in the same asyncio iteration (e.g. a
+        task.completed bus message and a status.snapshot game event both landing
+        simultaneously), the base class would queue each immediately and Pipecat
+        would fire a separate LLM inference for every one.
+
+        This override suppresses ``run_llm`` on each append and schedules a
+        single deferred ``LLMRunFrame`` via ``asyncio.ensure_future``.  All
+        callers within the same asyncio tick share the one pending task, so
+        exactly one ``LLMRunFrame`` is queued regardless of how many frames
+        arrive at once.  The tool-inflight path is unchanged — deferred frames
+        are coalesced as before by ``process_deferred_tool_frames``.
         """
         if self._tool_call_inflight > 0:
-            # Defer; process_deferred_tool_frames will coalesce
-            self._deferred_frames.append(LLMMessagesAppendFrame(messages=messages, run_llm=run_llm))
-        else:
-            await self.queue_frame(LLMMessagesAppendFrame(messages=messages, run_llm=False))
-            if run_llm and not self._inject_run_pending:
+            self._deferred_frames.append(frame)
+        elif isinstance(frame, LLMMessagesAppendFrame) and frame.run_llm:
+            frame.run_llm = False
+            await self.queue_frame(frame)
+            if not self._inject_run_pending:
                 self._inject_run_pending = True
                 asyncio.ensure_future(self._emit_coalesced_run())
+        else:
+            await self.queue_frame(frame)
 
     async def _emit_coalesced_run(self) -> None:
         """Send a single LLMRunFrame after yielding to accumulate same-tick injections."""
