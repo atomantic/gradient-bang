@@ -368,7 +368,7 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
         user_unmuted_event.set()
 
     inference_gate_state = InferenceGateState(
-        cooldown_seconds=2.0,
+        cooldown_seconds=1.5,
         post_llm_grace_seconds=1.5,
     )
     pre_llm_gate = PreLLMInferenceGate(inference_gate_state)
