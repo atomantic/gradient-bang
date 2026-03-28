@@ -532,7 +532,9 @@ class VoiceAgent(LLMAgent):
     async def _handle_ship_definitions(self, params: FunctionCallParams):
         from gradientbang.utils.formatting import summarize_ship_definitions
 
-        result = await self._game_client.get_ship_definitions()
+        result = await self._game_client.get_ship_definitions(
+            include_description=True
+        )
         definitions = result.get("definitions", result)
         summary = summarize_ship_definitions(definitions)
         self._begin_assistant_response_cycle()

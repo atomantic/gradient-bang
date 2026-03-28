@@ -2,7 +2,7 @@
  * Edge Function: ship_definitions
  *
  * Returns all ship definitions from the database including types, prices,
- * and capabilities.
+ * and capabilities. Description text is omitted unless explicitly requested.
  */
 
 import {
@@ -46,16 +46,18 @@ Deno.serve(
     const requestId = resolveRequestId(payload);
     const characterId =
       typeof payload.character_id === "string" ? payload.character_id : null;
+    const includeDescription = payload.include_description === true;
 
-    trace.setInput({ characterId, requestId });
+    trace.setInput({ characterId, includeDescription, requestId });
 
     try {
       const sQuery = trace.span("db_query_ship_definitions");
+      const selectColumns = includeDescription
+        ? "ship_type, display_name, cargo_holds, warp_power_capacity, turns_per_warp, shields, fighters, purchase_price, stats, description"
+        : "ship_type, display_name, cargo_holds, warp_power_capacity, turns_per_warp, shields, fighters, purchase_price, stats";
       const { data, error } = await supabase
         .from("ship_definitions")
-        .select(
-          "ship_type, display_name, cargo_holds, warp_power_capacity, turns_per_warp, shields, fighters, purchase_price, stats, description",
-        )
+        .select(selectColumns)
         .order("purchase_price", { ascending: true });
 
       if (error) {
@@ -83,6 +85,7 @@ Deno.serve(
       trace.setOutput({
         request_id: requestId,
         definitionCount: definitions.length,
+        includeDescription,
       });
       return successResponse({ definitions });
     } catch (err) {
