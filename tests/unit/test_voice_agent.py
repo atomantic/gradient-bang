@@ -1,5 +1,6 @@
 """Tests for VoiceAgent framework wiring and task management."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -168,111 +169,288 @@ class TestDeferredEventBatching:
         frame = LLMMessagesAppendFrame(
             messages=[{"role": "user", "content": "<event>test</event>"}], run_llm=True,
         )
-        await agent.queue_frame_after_tools(frame)
+        await agent.queue_frame(frame)
         assert len(agent._deferred_frames) == 1
 
     async def test_flush_deferred(self):
-        from pipecat.frames.frames import LLMMessagesAppendFrame
+        """Deferred frames are silently appended: run_llm stripped, no LLMRunFrame."""
+        from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+        from pipecat.processors.frame_processor import FrameDirection
 
         agent = _make_voice_agent()
-        agent.queue_frame = AsyncMock()
-        agent._tool_call_inflight = 1
-        await agent.queue_frame_after_tools(
-            LLMMessagesAppendFrame(messages=[{"role": "user", "content": "a"}], run_llm=True)
-        )
-        await agent.queue_frame_after_tools(
-            LLMMessagesAppendFrame(messages=[{"role": "user", "content": "b"}], run_llm=False)
-        )
-        agent._tool_call_inflight = 0
-        await agent._flush_deferred_frames()
-        assert len(agent._deferred_frames) == 0
-        # 2 AppendFrames (run_llm suppressed) + 1 LLMRunFrame
-        assert agent.queue_frame.call_count == 3
+        frames = [
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "a"}], run_llm=True), FrameDirection.DOWNSTREAM),
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "b"}], run_llm=False), FrameDirection.DOWNSTREAM),
+        ]
+        result = await agent.process_deferred_tool_frames(frames)
+        appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
+        runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
+        assert len(appends) == 2
+        assert len(runs) == 0
 
     async def test_flush_coalesces_run_llm(self):
-        """Multiple deferred run_llm=True frames produce a single LLMRunFrame."""
+        """Multiple deferred run_llm=True frames are silently appended without triggering inference."""
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+        from pipecat.processors.frame_processor import FrameDirection
 
         agent = _make_voice_agent()
-        agent.queue_frame = AsyncMock()
-        agent._tool_call_inflight = 1
+        frames = [
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": c}], run_llm=True), FrameDirection.DOWNSTREAM)
+            for c in ("event_a", "event_b", "event_c")
+        ]
+        result = await agent.process_deferred_tool_frames(frames)
 
-        # Queue 3 frames with run_llm=True while tool is active
-        for content in ("event_a", "event_b", "event_c"):
-            await agent.queue_frame_after_tools(
-                LLMMessagesAppendFrame(
-                    messages=[{"role": "user", "content": content}], run_llm=True
-                )
-            )
-        assert len(agent._deferred_frames) == 3
-
-        agent._tool_call_inflight = 0
-        await agent._flush_deferred_frames()
-
-        # 3 AppendFrames (all run_llm=False) + 1 LLMRunFrame at the end
-        assert agent.queue_frame.call_count == 4
-        flushed = [call.args[0] for call in agent.queue_frame.call_args_list]
-        appends = [f for f in flushed if isinstance(f, LLMMessagesAppendFrame)]
-        runs = [f for f in flushed if isinstance(f, LLMRunFrame)]
+        appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
+        runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
         assert all(f.run_llm is False for f in appends)
-        assert len(runs) == 1
-        # All messages preserved in order
+        assert len(runs) == 0
         assert [f.messages[0]["content"] for f in appends] == ["event_a", "event_b", "event_c"]
 
-    async def test_flush_single_frame_sends_run_frame(self):
-        """A single deferred frame with run_llm=True still produces an LLMRunFrame."""
+    async def test_flush_single_frame_silently_appends(self):
+        """A single deferred frame with run_llm=True is silently appended without inference."""
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+        from pipecat.processors.frame_processor import FrameDirection
 
         agent = _make_voice_agent()
-        agent.queue_frame = AsyncMock()
-        agent._tool_call_inflight = 1
-        await agent.queue_frame_after_tools(
-            LLMMessagesAppendFrame(messages=[{"role": "user", "content": "only"}], run_llm=True)
-        )
-        agent._tool_call_inflight = 0
-        await agent._flush_deferred_frames()
+        frames = [
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "only"}], run_llm=True), FrameDirection.DOWNSTREAM)
+        ]
+        result = await agent.process_deferred_tool_frames(frames)
 
-        assert agent.queue_frame.call_count == 2
-        flushed = [call.args[0] for call in agent.queue_frame.call_args_list]
-        assert isinstance(flushed[0], LLMMessagesAppendFrame)
-        assert flushed[0].run_llm is False
-        assert isinstance(flushed[1], LLMRunFrame)
+        appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
+        runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
+        assert len(appends) == 1
+        assert appends[0].run_llm is False
+        assert len(runs) == 0
 
     async def test_flush_no_run_llm_skips_run_frame(self):
         """Deferred frames with run_llm=False don't produce an LLMRunFrame."""
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
-
-        agent = _make_voice_agent()
-        agent.queue_frame = AsyncMock()
-        agent._tool_call_inflight = 1
-        await agent.queue_frame_after_tools(
-            LLMMessagesAppendFrame(messages=[{"role": "user", "content": "a"}], run_llm=False)
-        )
-        agent._tool_call_inflight = 0
-        await agent._flush_deferred_frames()
-
-        assert agent.queue_frame.call_count == 1
-        flushed = [call.args[0] for call in agent.queue_frame.call_args_list]
-        assert isinstance(flushed[0], LLMMessagesAppendFrame)
-        assert not any(isinstance(f, LLMRunFrame) for f in flushed)
-
-    async def test_process_deferred_tool_frames_hook(self):
-        """process_deferred_tool_frames coalesces run_llm and appends LLMRunFrame."""
-        from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+        from pipecat.processors.frame_processor import FrameDirection
 
         agent = _make_voice_agent()
         frames = [
-            LLMMessagesAppendFrame(messages=[{"role": "user", "content": "a"}], run_llm=True),
-            LLMMessagesAppendFrame(messages=[{"role": "user", "content": "b"}], run_llm=True),
-            LLMMessagesAppendFrame(messages=[{"role": "user", "content": "c"}], run_llm=False),
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "a"}], run_llm=False), FrameDirection.DOWNSTREAM)
         ]
         result = await agent.process_deferred_tool_frames(frames)
-        # All run_llm suppressed, single LLMRunFrame appended
-        appends = [f for f in result if isinstance(f, LLMMessagesAppendFrame)]
-        runs = [f for f in result if isinstance(f, LLMRunFrame)]
+
+        appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
+        runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
+        assert len(appends) == 1
+        assert not any(isinstance(f, LLMRunFrame) for f in runs)
+
+    async def test_concurrent_inject_context_silently_appends(self):
+        """N deferred run_llm=True frames → 0 LLMRunFrames via process_deferred_tool_frames.
+
+        Deferred events are silently appended to context without triggering inference.
+        The tool result already gets its own inference via function calling.
+        """
+        from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        agent = _make_voice_agent()
+        frames = [
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": f"task{i}"}], run_llm=True), FrameDirection.DOWNSTREAM)
+            for i in range(3)
+        ]
+        result = await agent.process_deferred_tool_frames(frames)
+
+        appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
+        runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
+        assert len(appends) == 3
         assert all(f.run_llm is False for f in appends)
-        assert len(runs) == 1
-        assert len(result) == 4  # 3 appends + 1 run frame
+        assert len(runs) == 0, f"Expected 0 LLMRunFrames but got {len(runs)}"
+
+    async def test_queue_frame_after_tools_silently_appends_mixed_sources(self):
+        """Mixed deferred frames (run_llm=True + run_llm=True) → 0 LLMRunFrames.
+
+        Verifies silent append when frames come from different sources (EventRelay +
+        bus protocol) but are both deferred during a tool call. No inference triggered.
+        """
+        from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        agent = _make_voice_agent()
+        frames = [
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "<event name=\"status.snapshot\">...</event>"}], run_llm=True), FrameDirection.DOWNSTREAM),
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "<event name=\"task.completed\">...</event>"}], run_llm=True), FrameDirection.DOWNSTREAM),
+        ]
+        result = await agent.process_deferred_tool_frames(frames)
+
+        appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
+        runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
+        assert len(appends) == 2
+        assert all(f.run_llm is False for f in appends)
+        assert len(runs) == 0, f"Expected 0 LLMRunFrames but got {len(runs)}"
+
+    async def test_process_deferred_tool_frames_hook(self):
+        """process_deferred_tool_frames strips run_llm without appending LLMRunFrame."""
+        from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        agent = _make_voice_agent()
+        frames = [
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "a"}], run_llm=True), FrameDirection.DOWNSTREAM),
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "b"}], run_llm=True), FrameDirection.DOWNSTREAM),
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "c"}], run_llm=False), FrameDirection.DOWNSTREAM),
+        ]
+        result = await agent.process_deferred_tool_frames(frames)
+        appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
+        runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
+        assert all(f.run_llm is False for f in appends)
+        assert len(runs) == 0
+        assert len(result) == 3  # 3 appends, no run frame
+
+    async def test_queue_frame_defers_when_tool_inflight(self):
+        """Frames are deferred when a tool call is in-flight."""
+        from pipecat.frames.frames import LLMMessagesAppendFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        agent = _make_voice_agent()
+        agent._tool_call_inflight = 1
+        frame = LLMMessagesAppendFrame(messages=[{"role": "user", "content": "task.completed"}], run_llm=True)
+        await agent.queue_frame(frame)
+
+        assert len(agent._deferred_frames) == 1
+        deferred_frame, direction = agent._deferred_frames[0]
+        assert deferred_frame is frame
+        assert direction == FrameDirection.DOWNSTREAM
+
+    async def test_process_deferred_frames_strip_run_llm(self):
+        """Deferred run_llm=True frame → silently appended, no LLMRunFrame."""
+        from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        agent = _make_voice_agent()
+        frames = [
+            (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "status.snapshot"}], run_llm=True), FrameDirection.DOWNSTREAM)
+        ]
+        result = await agent.process_deferred_tool_frames(frames)
+
+        runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
+        assert len(runs) == 0
+
+    async def test_process_deferred_frames_deferred_only_no_status_snapshot(self):
+        """Empty deferred frames → no LLMRunFrame added by process_deferred_tool_frames."""
+        from pipecat.frames.frames import LLMRunFrame
+
+        agent = _make_voice_agent()
+        result = await agent.process_deferred_tool_frames([])
+        runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
+        assert len(runs) == 0
+
+
+@pytest.mark.unit
+class TestTaskCompletionCooldown:
+    @staticmethod
+    def _make_task_response(agent: VoiceAgent):
+        from gradientbang.subagents.agents import TaskStatus
+        from gradientbang.subagents.bus.messages import BusTaskResponseMessage
+
+        child = MagicMock()
+        child.name = "task_abc123"
+        child._is_corp_ship = False
+        child._game_client = agent._game_client
+        agent._children = [child]
+
+        message = BusTaskResponseMessage(
+            source=child.name,
+            task_id="tid-1",
+            status=TaskStatus.COMPLETED,
+            response={"message": "Task done"},
+        )
+        return child, message
+
+    @staticmethod
+    def _stub_task_completion(agent: VoiceAgent) -> AsyncMock:
+        agent._task_output_handler = AsyncMock()
+        agent.send_message = AsyncMock()
+        agent._update_polling_scope = MagicMock()
+        agent._queue_task_completion_event = AsyncMock()
+        return agent._queue_task_completion_event
+
+    async def test_waits_through_llm_end_to_speech_start_gap(self, monkeypatch):
+        import gradientbang.pipecat_server.subagents.voice_agent as voice_agent_module
+
+        monkeypatch.setattr(voice_agent_module, "TASK_RESPONSE_COOLDOWN_SECONDS", 0.0)
+        monkeypatch.setattr(
+            voice_agent_module,
+            "TASK_RESPONSE_SPEECH_START_GRACE_SECONDS",
+            1.0,
+        )
+
+        agent = _make_voice_agent()
+        queue_completion = self._stub_task_completion(agent)
+        _, message = self._make_task_response(agent)
+
+        agent._handle_llm_response_started()
+        agent._handle_llm_response_ended()
+
+        response_task = asyncio.create_task(agent.on_task_response(message))
+        await asyncio.sleep(0)
+        queue_completion.assert_not_awaited()
+
+        agent._handle_bot_started_speaking()
+        await asyncio.sleep(0)
+        queue_completion.assert_not_awaited()
+
+        agent._handle_bot_stopped_speaking()
+        await asyncio.wait_for(response_task, timeout=0.5)
+        queue_completion.assert_awaited_once()
+
+    async def test_speech_start_grace_releases_silent_response_cycle(self, monkeypatch):
+        import gradientbang.pipecat_server.subagents.voice_agent as voice_agent_module
+
+        monkeypatch.setattr(voice_agent_module, "TASK_RESPONSE_COOLDOWN_SECONDS", 0.0)
+        monkeypatch.setattr(
+            voice_agent_module,
+            "TASK_RESPONSE_SPEECH_START_GRACE_SECONDS",
+            0.01,
+        )
+
+        agent = _make_voice_agent()
+        queue_completion = self._stub_task_completion(agent)
+        _, message = self._make_task_response(agent)
+
+        agent._handle_llm_response_started()
+        agent._handle_llm_response_ended()
+
+        response_task = asyncio.create_task(agent.on_task_response(message))
+        await asyncio.sleep(0)
+        queue_completion.assert_not_awaited()
+
+        await asyncio.wait_for(response_task, timeout=0.5)
+        queue_completion.assert_awaited_once()
+        assert agent._assistant_cycle_active is False
+
+    async def test_cooldown_uses_actual_bot_stop_time(self, monkeypatch):
+        import gradientbang.pipecat_server.subagents.voice_agent as voice_agent_module
+
+        monkeypatch.setattr(voice_agent_module, "TASK_RESPONSE_COOLDOWN_SECONDS", 0.05)
+        monkeypatch.setattr(
+            voice_agent_module,
+            "TASK_RESPONSE_SPEECH_START_GRACE_SECONDS",
+            1.0,
+        )
+
+        agent = _make_voice_agent()
+        queue_completion = self._stub_task_completion(agent)
+        _, message = self._make_task_response(agent)
+
+        agent._handle_llm_response_started()
+        agent._handle_bot_started_speaking()
+        agent._handle_llm_response_ended()
+
+        response_task = asyncio.create_task(agent.on_task_response(message))
+        await asyncio.sleep(0.01)
+        queue_completion.assert_not_awaited()
+
+        agent._handle_bot_stopped_speaking()
+        await asyncio.sleep(0.02)
+        queue_completion.assert_not_awaited()
+
+        await asyncio.wait_for(response_task, timeout=0.5)
+        queue_completion.assert_awaited_once()
 
 
 # ── Task tool handlers ────────────────────────────────────────────────
@@ -488,7 +666,7 @@ class TestCorporationDirectTools:
         )
         params.result_callback.assert_called_once()
         result = params.result_callback.call_args[0][0]
-        assert result == {"status": "Executed."}
+        assert result is None
         assert agent.is_recent_request_id("req-create")
 
     @pytest.mark.asyncio
@@ -508,8 +686,71 @@ class TestCorporationDirectTools:
         )
         params.result_callback.assert_called_once()
         result = params.result_callback.call_args[0][0]
-        assert result == {"status": "Executed."}
+        assert result is None
         assert agent.is_recent_request_id("req-rename")
+
+
+@pytest.mark.unit
+class TestEventDrivenToolErrors:
+    @pytest.mark.asyncio
+    async def test_my_status_hyperspace_error_is_silent_during_active_player_task(self):
+        from gradientbang.pipecat_server.subagents.task_agent import TaskAgent
+
+        agent = _make_voice_agent()
+        agent._game_client.my_status = AsyncMock(
+            side_effect=RuntimeError("my_status failed with status 409: in hyperspace")
+        )
+        active_task = MagicMock(spec=TaskAgent)
+        active_task._is_corp_ship = False
+        agent._children = [active_task]
+        params = MagicMock()
+        params.arguments = {}
+        params.result_callback = AsyncMock()
+
+        await agent._handle_my_status(params)
+
+        params.result_callback.assert_awaited_once()
+        assert params.result_callback.call_args.args[0] == {
+            "error": "my_status failed with status 409: in hyperspace"
+        }
+        properties = params.result_callback.call_args.kwargs["properties"]
+        assert properties.run_llm is False
+
+    @pytest.mark.asyncio
+    async def test_my_status_hyperspace_error_without_active_task_triggers_llm(self):
+        agent = _make_voice_agent()
+        agent._game_client.my_status = AsyncMock(
+            side_effect=RuntimeError("my_status failed with status 409: in hyperspace")
+        )
+        params = MagicMock()
+        params.arguments = {}
+        params.result_callback = AsyncMock()
+
+        await agent._handle_my_status(params)
+
+        params.result_callback.assert_awaited_once()
+        assert params.result_callback.call_args.args[0] == {
+            "error": "my_status failed with status 409: in hyperspace"
+        }
+        properties = params.result_callback.call_args.kwargs["properties"]
+        assert properties.run_llm is True
+        assert agent._assistant_cycle_active is True
+
+    @pytest.mark.asyncio
+    async def test_send_message_error_triggers_llm(self):
+        agent = _make_voice_agent()
+        agent._game_client.send_message = AsyncMock(side_effect=RuntimeError("message failed"))
+        params = MagicMock()
+        params.arguments = {"content": "hello"}
+        params.result_callback = AsyncMock()
+
+        await agent._handle_send_message(params)
+
+        params.result_callback.assert_awaited_once()
+        assert params.result_callback.call_args.args[0] == {"error": "message failed"}
+        properties = params.result_callback.call_args.kwargs["properties"]
+        assert properties.run_llm is True
+        assert agent._assistant_cycle_active is True
 
 
 # ── Corp ship routing guard ───────────────────────────────────────────
@@ -520,7 +761,8 @@ class TestCorpShipRouting:
     """Verify start_task correctly classifies personal vs corp ship tasks."""
 
     @pytest.mark.asyncio
-    async def test_personal_ship_id_treated_as_player_task(self):
+    @patch("gradientbang.pipecat_server.subagents.voice_agent.AsyncGameClient")
+    async def test_personal_ship_id_treated_as_player_task(self, mock_client_cls):
         """If the LLM passes a UUID that isn't a corp ship, treat as player task."""
         agent = _make_voice_agent()
         # _is_corp_ship_id returns False for an unknown ship
@@ -528,6 +770,7 @@ class TestCorpShipRouting:
             return_value=_corp_api_response()
         )
         agent._VoiceAgent__game_client.base_url = "http://localhost"
+        mock_client_cls.return_value = MagicMock()
 
         params = MagicMock()
         params.arguments = {
@@ -541,6 +784,10 @@ class TestCorpShipRouting:
         result = await agent._handle_start_task(params)
         assert result["success"] is True
         assert result["task_type"] == "player_ship"
+        mock_client_cls.assert_not_called()
+        task_agent = agent.add_agent.call_args.args[0]
+        assert task_agent._game_client is agent._game_client
+        assert task_agent._tag_outbound_rpcs_with_task_id is False
 
     @pytest.mark.asyncio
     @patch("gradientbang.pipecat_server.subagents.voice_agent.AsyncGameClient")
@@ -566,14 +813,27 @@ class TestCorpShipRouting:
         result = await agent._handle_start_task(params)
         assert result["success"] is True
         assert result["task_type"] == "corp_ship"
+        mock_client_cls.assert_called_once_with(
+            base_url="http://localhost",
+            character_id=CORP_SHIP_ID,
+            actor_character_id="char-123",
+            entity_type="corporation_ship",
+            transport="supabase",
+            enable_event_polling=False,
+        )
+        task_agent = agent.add_agent.call_args.args[0]
+        assert task_agent._game_client is mock_client_cls.return_value
+        assert task_agent._tag_outbound_rpcs_with_task_id is True
 
     @pytest.mark.asyncio
-    async def test_character_id_as_ship_id_treated_as_player_task(self):
+    @patch("gradientbang.pipecat_server.subagents.voice_agent.AsyncGameClient")
+    async def test_character_id_as_ship_id_treated_as_player_task(self, mock_client_cls):
         """If the LLM passes the player's own character_id as ship_id, treat as player task."""
         # Use a valid UUID as character_id so it passes _is_valid_uuid
         char_id = "11111111-1111-1111-1111-111111111111"
         agent = _make_voice_agent(character_id=char_id)
         agent._VoiceAgent__game_client.base_url = "http://localhost"
+        mock_client_cls.return_value = MagicMock()
 
         params = MagicMock()
         params.arguments = {
@@ -586,12 +846,18 @@ class TestCorpShipRouting:
         result = await agent._handle_start_task(params)
         assert result["success"] is True
         assert result["task_type"] == "player_ship"
+        mock_client_cls.assert_not_called()
+        task_agent = agent.add_agent.call_args.args[0]
+        assert task_agent._game_client is agent._game_client
+        assert task_agent._tag_outbound_rpcs_with_task_id is False
 
     @pytest.mark.asyncio
-    async def test_no_ship_id_is_player_task(self):
+    @patch("gradientbang.pipecat_server.subagents.voice_agent.AsyncGameClient")
+    async def test_no_ship_id_is_player_task(self, mock_client_cls):
         """Default: no ship_id means player task."""
         agent = _make_voice_agent()
         agent._VoiceAgent__game_client.base_url = "http://localhost"
+        mock_client_cls.return_value = MagicMock()
 
         params = MagicMock()
         params.arguments = {"task_description": "Go to sector 5"}
@@ -601,3 +867,7 @@ class TestCorpShipRouting:
         result = await agent._handle_start_task(params)
         assert result["success"] is True
         assert result["task_type"] == "player_ship"
+        mock_client_cls.assert_not_called()
+        task_agent = agent.add_agent.call_args.args[0]
+        assert task_agent._game_client is agent._game_client
+        assert task_agent._tag_outbound_rpcs_with_task_id is False

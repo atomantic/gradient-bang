@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import (
     FunctionCallInProgressFrame,
     FunctionCallResultProperties,
@@ -37,7 +38,6 @@ from pipecat.frames.frames import (
     LLMTextFrame,
     LLMThoughtTextFrame,
 )
-from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
@@ -46,20 +46,20 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams
 
-from gradientbang.subagents.agents import LLMAgent
+from gradientbang.pipecat_server.subagents.bus_messages import (
+    BusGameEventMessage,
+    BusSteerTaskMessage,
+)
+from gradientbang.subagents.agents import LLMAgent, TaskStatus
 from gradientbang.subagents.bus import (
     AgentBus,
     BusMessage,
     BusTaskCancelMessage,
     BusTaskRequestMessage,
     BusTaskUpdateRequestMessage,
-    TaskStatus,
 )
-
-from gradientbang.pipecat_server.subagents.bus_messages import BusGameEventMessage, BusSteerTaskMessage
 from gradientbang.tools import GAME_METHOD_ALIASES, TASK_TOOLS
 from gradientbang.utils.llm_factory import create_llm_service, get_task_agent_llm_config
-from gradientbang.utils.weave_tracing import traced
 from gradientbang.utils.prompt_loader import (
     AVAILABLE_TOPICS,
     TaskOutputType,
@@ -69,6 +69,7 @@ from gradientbang.utils.prompt_loader import (
     load_fragment,
 )
 from gradientbang.utils.supabase_client import AsyncGameClient
+from gradientbang.utils.weave_tracing import traced
 
 # ── Constants ─────────────────────────────────────────────────────────────
 
@@ -79,10 +80,15 @@ MAX_CONSECUTIVE_ERRORS = 3
 NO_TOOL_WATCHDOG_DELAY = 5.0
 
 # Tools restricted to player ships only (corp ships cannot use these).
-PLAYER_ONLY_TOOLS = frozenset({
-    "join_corporation", "leave_corporation",
-    "kick_corporation_member", "sell_ship", "bank_withdraw",
-})
+PLAYER_ONLY_TOOLS = frozenset(
+    {
+        "join_corporation",
+        "leave_corporation",
+        "kick_corporation_member",
+        "sell_ship",
+        "bank_withdraw",
+    }
+)
 
 # Tools that have async completion events. Inference is deferred until
 # the event arrives.
@@ -186,12 +192,14 @@ class TaskAgent(LLMAgent):
         character_id: str,
         is_corp_ship: bool = False,
         task_metadata: Optional[Dict[str, Any]] = None,
+        tag_outbound_rpcs_with_task_id: bool = True,
     ):
         super().__init__(name, bus=bus, active=False)
         self._game_client = game_client
         self._character_id = character_id
         self._is_corp_ship = is_corp_ship
         self._task_metadata = task_metadata or {}
+        self._tag_outbound_rpcs_with_task_id = tag_outbound_rpcs_with_task_id
         self._tool_schemas: Dict[str, Any] = {t.name: t for t in self.build_tools()}
 
         # ── Task state ──
@@ -271,8 +279,9 @@ class TaskAgent(LLMAgent):
 
         logger.info(f"TaskAgent '{self.name}': received task {task_id[:8]}")
 
-        # Tag game client for event correlation
-        self._game_client.current_task_id = task_id
+        # Dedicated corp-task clients carry task_id on outbound RPCs. Player
+        # tasks share the voice client's game client, so tagging is opt-in.
+        self._set_client_task_id(task_id)
 
         # Emit task.start game event
         try:
@@ -288,7 +297,10 @@ class TaskAgent(LLMAgent):
         # Build initial context
         messages = [
             {"role": "system", "content": build_task_agent_prompt()},
-            {"role": "user", "content": create_task_instruction_user_message(self._task_description)},
+            {
+                "role": "user",
+                "content": create_task_instruction_user_message(self._task_description),
+            },
         ]
         self._llm_context.set_messages(messages)
 
@@ -320,9 +332,11 @@ class TaskAgent(LLMAgent):
                 )
                 self._finish_emitted = True
             except Exception as exc:
-                logger.warning(f"TaskAgent '{self.name}': failed to emit task.finish (cancel): {exc}")
+                logger.warning(
+                    f"TaskAgent '{self.name}': failed to emit task.finish (cancel): {exc}"
+                )
 
-        self._game_client.current_task_id = None
+        self._clear_client_task_id(self._active_task_id)
         await super().on_task_cancelled(message)
 
     async def on_task_update_requested(self, message: BusTaskUpdateRequestMessage) -> None:
@@ -345,7 +359,10 @@ class TaskAgent(LLMAgent):
             llm_service = self.build_llm()
             summary = await llm_service.run_inference(context)
             await self.send_task_update(
-                {"type": "progress_report", "summary": (summary or "").strip() or "No summary available."}
+                {
+                    "type": "progress_report",
+                    "summary": (summary or "").strip() or "No summary available.",
+                }
             )
         except Exception as exc:
             logger.warning(f"TaskAgent '{self.name}': progress query failed: {exc}")
@@ -355,13 +372,25 @@ class TaskAgent(LLMAgent):
         await super().on_bus_message(message)
         if isinstance(message, BusGameEventMessage):
             if self._active_task_id:
-                await self._handle_bus_game_event(message.event)
+                await self._handle_bus_game_event(
+                    message.event, voice_agent_originated=message.voice_agent_originated
+                )
         elif isinstance(message, BusSteerTaskMessage):
             if self._active_task_id and message.task_id == self._active_task_id:
                 await self._inject_steering(message.text)
 
-    async def _handle_bus_game_event(self, event: Dict[str, Any]) -> None:
+    async def _handle_bus_game_event(
+        self, event: Dict[str, Any], *, voice_agent_originated: bool = False
+    ) -> None:
         """Filter and process a game event received from the bus."""
+        # Discard errors from VoiceAgent's own tool calls before any path-matching.
+        # All errors through EventRelay come from VoiceAgent's game_client; TaskAgents
+        # receive their own errors via exceptions. The player.id field on real server
+        # errors would otherwise match the character-scoped filter below, bypassing
+        # the ambient-error guard.
+        if voice_agent_originated and event.get("event_name") == "error":
+            return
+
         event_task_id = self._extract_event_task_id(event)
         # Events tagged with our task_id
         if event_task_id and event_task_id == self._active_task_id:
@@ -412,6 +441,19 @@ class TaskAgent(LLMAgent):
     def get_task_log(self) -> List[str]:
         return list(self._task_log)
 
+    def _set_client_task_id(self, task_id: Optional[str]) -> None:
+        if not self._tag_outbound_rpcs_with_task_id or not task_id:
+            return
+        self._game_client.current_task_id = task_id
+
+    def _clear_client_task_id(self, expected_task_id: Optional[str]) -> None:
+        if not self._tag_outbound_rpcs_with_task_id:
+            return
+        current_task_id = getattr(self._game_client, "current_task_id", None)
+        if expected_task_id and current_task_id not in {None, expected_task_id}:
+            return
+        self._game_client.current_task_id = None
+
     # ── Event handling ────────────────────────────────────────────────
 
     @traced
@@ -426,7 +468,12 @@ class TaskAgent(LLMAgent):
             return
 
         # Drop movement events for other characters
-        if event_name in {"character.moved", "garrison.character_moved", "movement.start", "movement.complete"}:
+        if event_name in {
+            "character.moved",
+            "garrison.character_moved",
+            "movement.start",
+            "movement.complete",
+        }:
             payload = event.get("payload")
             if isinstance(payload, dict):
                 player = payload.get("player")
@@ -447,7 +494,8 @@ class TaskAgent(LLMAgent):
         response_data = summary or event.get("payload")
         serialized = self._serialize_output(response_data)
         event_text = f"{event_name}: {serialized}" if event_name else serialized
-        self._output(event_text, TaskOutputType.EVENT)
+        output_type = TaskOutputType.ERROR if event_name == "error" else TaskOutputType.EVENT
+        self._output(event_text, output_type)
 
         if self._idle_wait_event and not self._idle_wait_event.is_set():
             self._idle_wait_event.set()
@@ -646,7 +694,7 @@ class TaskAgent(LLMAgent):
         await self._complete_task()
 
     async def _complete_task(self):
-        self._game_client.current_task_id = None
+        self._clear_client_task_id(self._active_task_id)
         self._active_task_id = None  # Stop processing events
         _STATUS_MAP = {"completed": TaskStatus.COMPLETED, "cancelled": TaskStatus.CANCELLED}
         status = _STATUS_MAP.get(self._task_finished_status, TaskStatus.FAILED)
@@ -787,7 +835,9 @@ class TaskAgent(LLMAgent):
             self._task_finished = True
             self._task_finished_status = "failed"
             self._task_finished_message = "Task stopped: LLM failed to call required tools"
-            self._output(self._timestamped_text(self._task_finished_message), TaskOutputType.FINISHED)
+            self._output(
+                self._timestamped_text(self._task_finished_message), TaskOutputType.FINISHED
+            )
 
             if self._active_task_id and not self._finish_emitted:
 
@@ -862,7 +912,9 @@ class TaskAgent(LLMAgent):
         self._task_finished_message = msg
         self._output(self._timestamped_text(msg), TaskOutputType.FINISHED)
         self._quench_inference_state()
-        await params.result_callback({"error": msg}, properties=FunctionCallResultProperties(run_llm=False))
+        await params.result_callback(
+            {"error": msg}, properties=FunctionCallResultProperties(run_llm=False)
+        )
 
         if self._active_task_id and not self._finish_emitted:
             try:
@@ -951,6 +1003,7 @@ class TaskAgent(LLMAgent):
         # Send to parent (VoiceAgent) so it can forward to client.
         # Guard: only send if framework task is active (cleared after send_task_response).
         if type_value and self._task_id and self._task_requester:
+
             async def _send():
                 try:
                     await self.send_task_update(
@@ -1119,4 +1172,3 @@ _SPECIAL_HANDLERS: Dict[str, str] = {
     "load_game_info": "_tool_load_game_info",
     "wait_in_idle_state": "_tool_wait_in_idle_state",
 }
-

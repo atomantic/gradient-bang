@@ -38,7 +38,7 @@ export const ConversationProvider = ({ children }: React.PropsWithChildren) => {
   })
 
   /** Delay (ms) before finalizing the assistant message after bot stops speaking. */
-  const BOT_STOPPED_FINALIZE_DELAY_MS = 2500
+  const BOT_STOPPED_FINALIZE_DELAY_MS = 1500
 
   const finalizeLastAssistantMessageIfPending = () => {
     clearTimeout(botStoppedSpeakingTimeoutRef.current)
@@ -108,7 +108,10 @@ export const ConversationProvider = ({ children }: React.PropsWithChildren) => {
     clearTimeout(placeholderTimeoutRef.current)
     placeholderTimeoutRef.current = undefined
 
-    ensureAssistantMessage()
+    const createdNewAssistantMessage = ensureAssistantMessage()
+    if (createdNewAssistantMessage) {
+      botOutputLastChunkRef.current = { spoken: "", unspoken: "" }
+    }
 
     // Handle spacing for BotOutput chunks
     let textToAdd = data.text

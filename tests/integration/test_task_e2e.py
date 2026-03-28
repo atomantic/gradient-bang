@@ -8,10 +8,13 @@ real TaskAgent pipeline with a scripted LLM, and real event relay routing.
 """
 
 import asyncio
+import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
 from gradientbang.pipecat_server.subagents.task_agent import TaskAgent
@@ -75,6 +78,11 @@ class TestTaskLifecycleE2E:
             assert len(completion_msgs) >= 1, (
                 f"Expected task.completed in LLM context. Got: "
                 f"{[c[:80] for c, _ in h.llm_messages]}"
+            )
+            task_finish_msgs = [c for c, _ in h.llm_messages if "task.finish" in c]
+            assert task_finish_msgs == [], (
+                f"task.finish should not be appended to the voice LLM. "
+                f"Got: {[c[:80] for c in task_finish_msgs]}"
             )
         finally:
             await h.stop()
@@ -226,7 +234,7 @@ class TestAsyncCompletionE2E:
 
         Before the fix, task completion caused duplicate inference because both:
         1. The bus protocol (on_task_response) injects task.completed with run_llm=True
-        2. The task.finish game event via EventRelay also triggers run_llm=True
+        2. The task.finish game event via EventRelay also reached the voice LLM
 
         This caused the LLM to repeat itself (users reported 3x responses:
         start_task result + two duplicate completion inferences).
@@ -270,6 +278,12 @@ class TestAsyncCompletionE2E:
             assert "task.completed" in completion_inferences[0][0], (
                 f"Completion inference should be from bus protocol (task.completed), "
                 f"got: {completion_inferences[0][0][:100]}"
+            )
+
+            task_finish_msgs = [c for c, _ in h.llm_messages if "task.finish" in c]
+            assert task_finish_msgs == [], (
+                f"task.finish should not be appended to the voice LLM. "
+                f"Got: {[c[:100] for c in task_finish_msgs]}"
             )
         finally:
             await h.stop()
@@ -316,6 +330,73 @@ class TestAsyncCompletionE2E:
 
             completed = await h.wait_for_task_complete(timeout=30.0)
             assert completed, "Task did not complete after async completion event"
+        finally:
+            if h._task_llm_gate:
+                h._task_llm_gate.set()
+            await h.stop()
+
+    async def test_direct_status_during_player_task_is_not_task_tagged(self):
+        """Direct voice my_status should stay untagged while a player task is active."""
+        h = E2EHarness(self.character_id, self.api, self.make_game_client)
+        await h.start()
+        try:
+            await h.join_game()
+
+            # Keep the task active on the shared player client before its first
+            # tool call so a direct voice my_status runs concurrently with it.
+            h._task_llm_gate = asyncio.Event()
+            h.set_task_script([("my_status", {})])
+            result = await h.start_player_task("Check status async")
+            assert result["success"] is True, f"start_task failed: {result}"
+
+            await asyncio.sleep(0.5)
+
+            params = MagicMock(spec=FunctionCallParams)
+            params.arguments = {}
+            params.result_callback = AsyncMock()
+
+            baseline_llm_count = len(h.llm_messages)
+            await h.voice_agent._handle_my_status(params)
+            direct_request_id = h.game_client.last_request_id
+            assert direct_request_id, "voice my_status did not record a request_id"
+
+            events = await h.poll_and_feed_events()
+            direct_status_events = [
+                event for event in events
+                if event.get("event_type") == "status.snapshot"
+                and event.get("request_id") == direct_request_id
+            ]
+
+            assert len(direct_status_events) == 1, (
+                f"Expected exactly one direct status.snapshot for request {direct_request_id}, "
+                f"got {[(event.get('event_type'), event.get('request_id')) for event in events]}"
+            )
+            assert direct_status_events[0].get("task_id") is None, (
+                f"Direct voice my_status should not inherit the player task_id. "
+                f"Event: {direct_status_events[0]}"
+            )
+
+            h._task_llm_gate.set()
+            completed = await h.wait_for_task_complete(timeout=30.0)
+            assert completed, "Player task did not complete after direct my_status"
+
+            new_llm_messages = h.llm_messages[baseline_llm_count:]
+            direct_status_inferences = [
+                (content, run_llm) for content, run_llm in new_llm_messages
+                if run_llm is True
+                and "status.snapshot" in content
+                and "task.completed" not in content
+            ]
+            completion_inferences = [
+                (content, run_llm) for content, run_llm in new_llm_messages
+                if run_llm is True and "task.completed" in content
+            ]
+
+            assert direct_status_inferences, "Expected a direct status.snapshot inference trigger"
+            assert len(completion_inferences) == 1, (
+                f"Expected exactly one task.completed inference trigger, "
+                f"got {[(content[:100], run_llm) for content, run_llm in completion_inferences]}"
+            )
         finally:
             if h._task_llm_gate:
                 h._task_llm_gate.set()
@@ -571,4 +652,214 @@ class TestFullVoiceLoopE2E:
                 f"Got: {[c[:80] for c, _ in h.llm_messages]}"
             )
         finally:
+            await h.stop()
+
+
+# ── Inference coalescing ──────────────────────────────────────────────
+
+
+@pytest.mark.integration
+class TestInferenceCoalescingE2E:
+    """Inference deduplication: same-tick coalescing and LLM-inflight deferral.
+
+    REGRESSION: multiple events arriving close together previously triggered
+    multiple LLM inferences, causing back-to-back repeated responses.
+    """
+
+    @pytest.fixture(autouse=True)
+    async def setup(self, reset_db_with_characters, edge_api, make_game_client):
+        await reset_db_with_characters(["test_inference_coalesce_p1"])
+        self.character_id = canonicalize_character_id("test_inference_coalesce_p1")
+        self.api = edge_api
+        self.make_game_client = make_game_client
+
+    async def test_n_simultaneous_completions_are_silent_when_deferred(self):
+        """Deferred completion frames are appended without emitting an LLMRunFrame.
+
+        The recent VoiceAgent changes intentionally strip run_llm from deferred
+        event frames. The tool result gets its own inference; deferred task
+        completions should not inject an extra one here.
+        """
+        h = E2EHarness(self.character_id, self.api, self.make_game_client)
+        await h.start()
+        try:
+            await h.join_game()
+
+            # Simulate 3 deferred frames with run_llm=True (concurrent task completions)
+            frames = [
+                (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "task.completed 1"}], run_llm=True), FrameDirection.DOWNSTREAM),
+                (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "task.completed 2"}], run_llm=True), FrameDirection.DOWNSTREAM),
+                (LLMMessagesAppendFrame(messages=[{"role": "user", "content": "task.completed 3"}], run_llm=True), FrameDirection.DOWNSTREAM),
+            ]
+
+            result = await h.voice_agent.process_deferred_tool_frames(frames)
+
+            run_frames = [f for f, _ in result if isinstance(f, LLMRunFrame)]
+            remaining_run_llm = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame) and f.run_llm]
+
+            assert len(run_frames) == 0, (
+                f"Expected 0 LLMRunFrames for 3 deferred completions, "
+                f"got {len(run_frames)}"
+            )
+            assert len(remaining_run_llm) == 0, (
+                f"All LLMMessagesAppendFrame.run_llm should be False after coalescing"
+            )
+        finally:
+            await h.stop()
+
+    async def test_task_completion_waits_for_spoken_turn_and_cooldown(self, monkeypatch):
+        """Task completion waits for the prior spoken turn to finish before injection."""
+        import gradientbang.pipecat_server.subagents.voice_agent as voice_agent_module
+        from gradientbang.subagents.agents import TaskStatus
+        from gradientbang.subagents.bus.messages import BusTaskResponseMessage
+
+        h = E2EHarness(self.character_id, self.api, self.make_game_client)
+        await h.start()
+        try:
+            await h.join_game()
+            monkeypatch.setattr(voice_agent_module, "TASK_RESPONSE_COOLDOWN_SECONDS", 0.05)
+            monkeypatch.setattr(
+                voice_agent_module,
+                "TASK_RESPONSE_SPEECH_START_GRACE_SECONDS",
+                1.0,
+            )
+
+            h.voice_agent._task_output_handler = AsyncMock()
+            h.voice_agent.send_message = AsyncMock()
+            h.voice_agent._update_polling_scope = MagicMock()
+            h.voice_agent._queue_task_completion_event = AsyncMock()
+
+            child = MagicMock()
+            child.name = "task_abc123"
+            child._is_corp_ship = False
+            child._game_client = h.voice_agent._game_client
+            h.voice_agent._children = [child]
+
+            h.voice_agent._handle_llm_response_started()
+            h.voice_agent._handle_llm_response_ended()
+
+            response_task = asyncio.create_task(
+                h.voice_agent.on_task_response(
+                    BusTaskResponseMessage(
+                        source=child.name,
+                        task_id="tid-1",
+                        status=TaskStatus.COMPLETED,
+                        response={"message": "Task done"},
+                    )
+                )
+            )
+            await asyncio.sleep(0.01)
+            h.voice_agent._queue_task_completion_event.assert_not_awaited()
+
+            h.voice_agent._handle_bot_started_speaking()
+            await asyncio.sleep(0.01)
+            h.voice_agent._queue_task_completion_event.assert_not_awaited()
+
+            h.voice_agent._handle_bot_stopped_speaking()
+            await asyncio.sleep(0.02)
+            h.voice_agent._queue_task_completion_event.assert_not_awaited()
+
+            await asyncio.wait_for(response_task, timeout=1.0)
+            h.voice_agent._queue_task_completion_event.assert_awaited_once()
+        finally:
+            await h.stop()
+
+
+# ── Voice-agent error isolation ───────────────────────────────────────────
+
+
+@pytest.mark.integration
+class TestVoiceAgentErrorIsolationE2E:
+    """VoiceAgent tool errors must not bleed into TaskAgent completion tracking.
+
+    Regression: synthesized error events (e.g. my_status → 409 in hyperspace)
+    were broadcast unconditionally to all TaskAgents via the bus. A TaskAgent
+    waiting on _awaiting_completion_event would treat any error as its own
+    completion signal, clearing the wait and triggering premature inference.
+
+    Fix: EventRelay stamps BusGameEventMessage with voice_agent_originated=True
+    when an error has a source.request_id (always true for synthesized errors,
+    since all errors through EventRelay come from VoiceAgent's game_client).
+    TaskAgent discards those without touching its state.
+    """
+
+    @pytest.fixture(autouse=True)
+    async def setup(self, reset_db_with_characters, edge_api, make_game_client):
+        await reset_db_with_characters(["test_error_isolation_p1"])
+        self.character_id = canonicalize_character_id("test_error_isolation_p1")
+        self.api = edge_api
+        self.make_game_client = make_game_client
+
+    async def test_voice_error_does_not_unblock_task_async_wait(self):
+        """Synthesized voice-agent error must not clear _awaiting_completion_event.
+
+        Scenario: TaskAgent is waiting for movement.complete. VoiceAgent calls
+        my_status directly and gets a 409 (character in hyperspace). The resulting
+        synthesized error event is broadcast to the bus. TaskAgent must ignore it
+        and remain blocked on movement.complete — not proceed with inference.
+        """
+        h = E2EHarness(self.character_id, self.api, self.make_game_client)
+        await h.start()
+        try:
+            await h.join_game()
+
+            # Gate keeps the task alive long enough to inspect mid-execution state
+            h._task_llm_gate = asyncio.Event()
+            h.set_task_script([("my_status", {})])
+            result = await h.start_player_task("Background task awaiting async completion")
+            assert result["success"] is True
+
+            # Wait for TaskAgent to be created and assigned its active task
+            task_agent = None
+            for _ in range(40):
+                task_agent = next(
+                    (c for c in h.voice_agent.children if isinstance(c, TaskAgent)),
+                    None,
+                )
+                if task_agent and task_agent._active_task_id:
+                    break
+                await asyncio.sleep(0.05)
+            assert task_agent is not None, "TaskAgent should have been created"
+            assert task_agent._active_task_id, "TaskAgent should have an active task ID"
+
+            # Simulate the task having issued an async move call
+            task_agent._awaiting_completion_event = "movement.complete"
+            initial_error_count = task_agent._consecutive_error_count
+
+            # Inject an error event matching the real server structure when
+            # VoiceAgent's my_status fails (e.g. character is in hyperspace).
+            # Critically: the real server event includes player.id, which would
+            # match the character-scoped filter and bypass the ambient-error guard
+            # if voice_agent_originated were not checked first.
+            voice_error_event = {
+                "event_name": "error",
+                "payload": {
+                    "error": "Character is in hyperspace, status unavailable until arrival",
+                    "player": {"id": self.character_id},
+                    "source": {
+                        "type": "rpc",
+                        "method": "my_status",
+                        "request_id": str(uuid.uuid4()),
+                    },
+                    "status": 409,
+                    "endpoint": "my_status",
+                },
+            }
+            await h.relay._relay_event(voice_error_event)
+            await asyncio.sleep(0.05)  # let any async propagation settle
+
+            # TaskAgent must still be waiting — error must not have unblocked it
+            assert task_agent._awaiting_completion_event == "movement.complete", (
+                "TaskAgent._awaiting_completion_event was cleared by a VoiceAgent error. "
+                f"Got: {task_agent._awaiting_completion_event!r}"
+            )
+
+            # Error must not be counted against the TaskAgent's consecutive error limit
+            assert task_agent._consecutive_error_count == initial_error_count, (
+                f"VoiceAgent error incremented TaskAgent._consecutive_error_count. "
+                f"Before: {initial_error_count}, After: {task_agent._consecutive_error_count}"
+            )
+        finally:
+            if h._task_llm_gate:
+                h._task_llm_gate.set()
             await h.stop()

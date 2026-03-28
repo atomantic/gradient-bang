@@ -94,7 +94,9 @@ class EventConfig:
     suppress_deferred_inference: bool = False  # Suppress run_llm when deferred during tool calls
 
     # XML
-    xml_context_key: Optional[str] = None  # Payload key to extract as an XML attribute (e.g. "combat_id")
+    xml_context_key: Optional[str] = (
+        None  # Payload key to extract as an XML attribute (e.g. "combat_id")
+    )
 
 
 _DEFAULT_CONFIG = EventConfig()
@@ -297,12 +299,12 @@ EVENT_CONFIGS: dict[str, EventConfig] = {
     ),
     # Task lifecycle
     "task.start": EventConfig(append=AppendRule.OWNED_TASK, task_scoped_allowlisted=True),
-    # Bus protocol (on_task_response) already injects task.completed with
-    # run_llm=True into the voice LLM.  If we also trigger inference here,
-    # the LLM runs twice on the same completion and repeats itself.
+    # Bus protocol (on_task_response) already injects task.completed into the
+    # voice LLM. Keeping task.finish in the voice context as a second copy of
+    # the same completion summary makes the assistant repeat itself, so route it
+    # only to RTVI + the bus and skip LLM append entirely.
     "task.finish": EventConfig(
-        append=AppendRule.OWNED_TASK,
-        task_scoped_allowlisted=True,
+        append=AppendRule.NEVER,
     ),
     # Local movement
     "character.moved": EventConfig(append=AppendRule.LOCAL),
@@ -379,7 +381,9 @@ class TaskStateProvider(Protocol):
     """Callbacks that EventRelay needs from the task-state owner (VoiceAgent)."""
 
     # Event distribution to TaskAgent children via bus
-    async def broadcast_game_event(self, event: Dict[str, Any]) -> None: ...
+    async def broadcast_game_event(
+        self, event: Dict[str, Any], *, voice_agent_originated: bool = False
+    ) -> None: ...
 
     # Task awareness (for routing decisions)
     def is_our_task(self, task_id: str) -> bool: ...
@@ -389,7 +393,7 @@ class TaskStateProvider(Protocol):
     # LLM frame management (inherited from LLMAgent)
     @property
     def tool_call_active(self) -> bool: ...
-    async def queue_frame_after_tools(self, frame) -> None: ...
+    async def queue_frame(self, frame) -> None: ...
 
 
 # ── EventRelay ────────────────────────────────────────────────────────────
@@ -446,7 +450,9 @@ class EventRelay:
         # Issue megaport check — response arrives as a ports.list event after resume
         try:
             mega_ack = await self._game_client.list_known_ports(
-                character_id=self._character_id, mega=True, max_hops=100,
+                character_id=self._character_id,
+                mega=True,
+                max_hops=100,
             )
             req_id = mega_ack.get("request_id") if isinstance(mega_ack, Mapping) else None
             if req_id:
@@ -504,7 +510,9 @@ class EventRelay:
                     should_run_llm=False,
                 )
 
-    def _resolve_initial_megaport_check(self, request_id: Optional[str], clean_payload: Any) -> None:
+    def _resolve_initial_megaport_check(
+        self, request_id: Optional[str], clean_payload: Any
+    ) -> None:
         """Resolve the initial megaport check from join()."""
         if not self._megaport_check_request_id:
             return
@@ -538,7 +546,7 @@ class EventRelay:
         else:
             logger.info("Onboarding: veteran player, normal startup")
             await self._deliver_llm_event(
-                '<event name="session.start">\nSession started.\n</event>',
+                '<event name="session.start"></event>',
                 should_run_llm=True,
             )
 
@@ -616,7 +624,7 @@ class EventRelay:
     # ── LLM event delivery ─────────────────────────────────────────────
 
     async def _deliver_llm_event(self, event_xml: str, should_run_llm: bool) -> None:
-        await self._task_state.queue_frame_after_tools(
+        await self._task_state.queue_frame(
             LLMMessagesAppendFrame(
                 messages=[{"role": "user", "content": event_xml}],
                 run_llm=should_run_llm,
@@ -729,7 +737,9 @@ class EventRelay:
 
         # Suppress initial status.snapshot inference until onboarding resolves
         if result and not self._onboarding_complete and event_name == "status.snapshot":
-            logger.info("Onboarding: suppressing status.snapshot inference until onboarding resolves")
+            logger.info(
+                "Onboarding: suppressing status.snapshot inference until onboarding resolves"
+            )
             result = False
 
         return result
@@ -737,9 +747,6 @@ class EventRelay:
     # ── Core event router ──────────────────────────────────────────────
 
     async def _relay_event(self, event: Dict[str, Any]) -> None:
-        # Broadcast every event to the bus for TaskAgent children
-        await self._task_state.broadcast_game_event(event)
-
         # ── Phase 1: Parse ──
         event_name = event.get("event_name")
         payload = event.get("payload")
@@ -747,6 +754,36 @@ class EventRelay:
         clean_payload = self._strip_internal_event_metadata(payload)
         event_context = self._extract_event_context(payload)
         cfg = EVENT_CONFIGS.get(event_name, _DEFAULT_CONFIG)
+
+        # Detect voice-agent origin before broadcasting to the bus.
+        #
+        # For non-error events: check the top-level request_id against
+        # VoiceAgent's recent-request cache (set on successful tool calls).
+        #
+        # For error events: cache-based detection doesn't work because errors
+        # are synthesized and emitted *before* the exception returns to the
+        # VoiceAgent handler, so the request_id is never cached. Instead, rely
+        # on the architectural fact: all errors flowing through EventRelay come
+        # from VoiceAgent's game_client — TaskAgents have their own client and
+        # receive their own errors via exceptions, never via the bus. A
+        # source.request_id being present (always true for synthesized errors)
+        # is sufficient to confirm it's a VoiceAgent API call error.
+        if event_name == "error":
+            _src_rid = None
+            if isinstance(payload, Mapping):
+                src = payload.get("source")
+                if isinstance(src, Mapping):
+                    _src_rid = src.get("request_id")
+            is_voice_originated = _src_rid is not None
+        else:
+            is_voice_originated = (
+                self._task_state.is_recent_request_id(request_id) if request_id else False
+            )
+
+        # Broadcast every event to the bus for TaskAgent children
+        await self._task_state.broadcast_game_event(
+            event, voice_agent_originated=is_voice_originated
+        )
 
         direct_recipient = self._is_direct_recipient_event(event_context)
         in_participants = _is_player_participant(self, clean_payload)
@@ -844,7 +881,7 @@ class EventRelay:
         if payload_task_id and self._task_state.tool_call_active:
             if cfg.suppress_deferred_inference:
                 should_run_llm = False
-            await self._task_state.queue_frame_after_tools(
+            await self._task_state.queue_frame(
                 LLMMessagesAppendFrame(
                     messages=[{"role": "user", "content": event_xml}],
                     run_llm=should_run_llm,
