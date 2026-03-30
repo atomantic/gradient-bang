@@ -1,6 +1,7 @@
 """Tests for VoiceAgent framework wiring and task management."""
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -191,7 +192,7 @@ class TestDeferredEventBatching:
         assert len(agent._deferred_frames) == 1
 
     async def test_flush_deferred(self):
-        """Deferred frames are silently appended: run_llm stripped, no LLMRunFrame."""
+        """Deferred frames keep one coalesced LLMRunFrame when needed."""
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
         from pipecat.processors.frame_processor import FrameDirection
 
@@ -204,10 +205,10 @@ class TestDeferredEventBatching:
         appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
         runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
         assert len(appends) == 2
-        assert len(runs) == 0
+        assert len(runs) == 1
 
     async def test_flush_coalesces_run_llm(self):
-        """Multiple deferred run_llm=True frames are silently appended without triggering inference."""
+        """Multiple deferred run_llm=True frames produce one coalesced run."""
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
         from pipecat.processors.frame_processor import FrameDirection
 
@@ -221,11 +222,11 @@ class TestDeferredEventBatching:
         appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
         runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
         assert all(f.run_llm is False for f in appends)
-        assert len(runs) == 0
+        assert len(runs) == 1
         assert [f.messages[0]["content"] for f in appends] == ["event_a", "event_b", "event_c"]
 
-    async def test_flush_single_frame_silently_appends(self):
-        """A single deferred frame with run_llm=True is silently appended without inference."""
+    async def test_flush_single_frame_adds_one_run(self):
+        """A single deferred run_llm=True frame becomes one append plus one run."""
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
         from pipecat.processors.frame_processor import FrameDirection
 
@@ -239,7 +240,7 @@ class TestDeferredEventBatching:
         runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
         assert len(appends) == 1
         assert appends[0].run_llm is False
-        assert len(runs) == 0
+        assert len(runs) == 1
 
     async def test_flush_no_run_llm_skips_run_frame(self):
         """Deferred frames with run_llm=False don't produce an LLMRunFrame."""
@@ -257,11 +258,11 @@ class TestDeferredEventBatching:
         assert len(appends) == 1
         assert not any(isinstance(f, LLMRunFrame) for f in runs)
 
-    async def test_concurrent_inject_context_silently_appends(self):
-        """N deferred run_llm=True frames → 0 LLMRunFrames via process_deferred_tool_frames.
+    async def test_concurrent_inject_context_coalesces_to_one_run(self):
+        """N deferred run_llm=True frames -> 1 coalesced LLMRunFrame.
 
-        Deferred events are silently appended to context without triggering inference.
-        The tool result already gets its own inference via function calling.
+        Deferred events are appended with run_llm stripped, then the voice agent
+        runs once on the flushed real data.
         """
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
         from pipecat.processors.frame_processor import FrameDirection
@@ -277,13 +278,13 @@ class TestDeferredEventBatching:
         runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
         assert len(appends) == 3
         assert all(f.run_llm is False for f in appends)
-        assert len(runs) == 0, f"Expected 0 LLMRunFrames but got {len(runs)}"
+        assert len(runs) == 1, f"Expected 1 LLMRunFrame but got {len(runs)}"
 
-    async def test_queue_frame_after_tools_silently_appends_mixed_sources(self):
-        """Mixed deferred frames (run_llm=True + run_llm=True) → 0 LLMRunFrames.
+    async def test_queue_frame_after_tools_coalesces_mixed_sources(self):
+        """Mixed deferred frames still collapse to one follow-up run.
 
         Verifies silent append when frames come from different sources (EventRelay +
-        bus protocol) but are both deferred during a tool call. No inference triggered.
+        bus protocol) but are both deferred during a tool call.
         """
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
         from pipecat.processors.frame_processor import FrameDirection
@@ -299,10 +300,10 @@ class TestDeferredEventBatching:
         runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
         assert len(appends) == 2
         assert all(f.run_llm is False for f in appends)
-        assert len(runs) == 0, f"Expected 0 LLMRunFrames but got {len(runs)}"
+        assert len(runs) == 1, f"Expected 1 LLMRunFrame but got {len(runs)}"
 
     async def test_process_deferred_tool_frames_hook(self):
-        """process_deferred_tool_frames strips run_llm without appending LLMRunFrame."""
+        """process_deferred_tool_frames strips run_llm and appends one LLMRunFrame."""
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
         from pipecat.processors.frame_processor import FrameDirection
 
@@ -316,8 +317,8 @@ class TestDeferredEventBatching:
         appends = [f for f, _ in result if isinstance(f, LLMMessagesAppendFrame)]
         runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
         assert all(f.run_llm is False for f in appends)
-        assert len(runs) == 0
-        assert len(result) == 3  # 3 appends, no run frame
+        assert len(runs) == 1
+        assert len(result) == 4  # 3 appends, 1 run frame
 
     async def test_queue_frame_defers_when_tool_inflight(self):
         """Frames are deferred when a tool call is in-flight."""
@@ -335,7 +336,7 @@ class TestDeferredEventBatching:
         assert direction == FrameDirection.DOWNSTREAM
 
     async def test_process_deferred_frames_strip_run_llm(self):
-        """Deferred run_llm=True frame → silently appended, no LLMRunFrame."""
+        """Deferred run_llm=True frame -> one coalesced LLMRunFrame."""
         from pipecat.frames.frames import LLMMessagesAppendFrame, LLMRunFrame
         from pipecat.processors.frame_processor import FrameDirection
 
@@ -346,7 +347,7 @@ class TestDeferredEventBatching:
         result = await agent.process_deferred_tool_frames(frames)
 
         runs = [f for f, _ in result if isinstance(f, LLMRunFrame)]
-        assert len(runs) == 0
+        assert len(runs) == 1
 
     async def test_process_deferred_frames_deferred_only_no_status_snapshot(self):
         """Empty deferred frames → no LLMRunFrame added by process_deferred_tool_frames."""
@@ -469,6 +470,63 @@ class TestTaskCompletionCooldown:
 
         await asyncio.wait_for(response_task, timeout=0.5)
         queue_completion.assert_awaited_once()
+
+
+# ── Idle reports ───────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestIdleReports:
+    async def test_on_idle_report_injects_one_sentence_prompt(self):
+        agent = _make_voice_agent()
+        agent._task_groups = {"task-1": MagicMock()}
+        agent._inject_context = AsyncMock()
+
+        fired = await agent.on_idle_report()
+
+        assert fired is True
+        agent._inject_context.assert_awaited_once()
+        messages = agent._inject_context.await_args.args[0]
+        assert messages[0]["role"] == "user"
+        assert "<idle_check>" in messages[0]["content"]
+        assert agent._inject_context.await_args.kwargs == {"run_llm": True}
+
+    async def test_on_idle_report_skips_without_tasks(self):
+        agent = _make_voice_agent()
+        agent._inject_context = AsyncMock()
+
+        fired = await agent.on_idle_report()
+
+        assert fired is False
+        agent._inject_context.assert_not_awaited()
+
+    async def test_on_idle_report_skips_during_cooldown(self):
+        agent = _make_voice_agent()
+        agent._task_groups = {"task-1": MagicMock()}
+        agent._inject_context = AsyncMock()
+        agent._last_idle_report_at = time.time()
+
+        fired = await agent.on_idle_report()
+
+        assert fired is False
+        agent._inject_context.assert_not_awaited()
+
+    async def test_on_idle_report_defers_cleanly_during_tool_call(self):
+        from pipecat.frames.frames import LLMMessagesAppendFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        agent = _make_voice_agent()
+        agent._task_groups = {"task-1": MagicMock()}
+        agent._tool_call_inflight = 1
+
+        fired = await agent.on_idle_report()
+
+        assert fired is True
+        assert len(agent._deferred_frames) == 1
+        frame, direction = agent._deferred_frames[0]
+        assert direction == FrameDirection.DOWNSTREAM
+        assert isinstance(frame, LLMMessagesAppendFrame)
+        assert frame.run_llm is True
 
 
 # ── Task tool handlers ────────────────────────────────────────────────
@@ -805,7 +863,41 @@ class TestVoiceToolErrorWrapping:
 @pytest.mark.unit
 class TestTaskToolWrappers:
     @pytest.mark.asyncio
-    async def test_start_task_tool_failure_continues_llm(self):
+    async def test_start_task_tool_success_queues_started_event(self):
+        from pipecat.frames.frames import LLMMessagesAppendFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        agent = _make_voice_agent()
+        agent._tool_call_inflight = 1
+        result = {
+            "success": True,
+            "message": "Task started",
+            "task_id": "task_abc123",
+            "task_type": "player_ship",
+        }
+        agent._handle_start_task = AsyncMock(return_value=result)
+        params = _make_function_call_params(function_name="start_task", result_callback=AsyncMock())
+
+        await agent._handle_start_task_tool(params)
+
+        params.result_callback.assert_awaited_once()
+        assert params.result_callback.await_args.args[0] == {"result": result}
+        properties = params.result_callback.await_args.kwargs["properties"]
+        assert properties.run_llm is False
+
+        assert len(agent._deferred_frames) == 1
+        deferred_frame, direction = agent._deferred_frames[0]
+        assert direction == FrameDirection.DOWNSTREAM
+        assert isinstance(deferred_frame, LLMMessagesAppendFrame)
+        assert deferred_frame.run_llm is True
+        assert deferred_frame.messages[0]["role"] == "user"
+        assert '<event name="task.started" task_id="task_abc123" task_type="player_ship">' in (
+            deferred_frame.messages[0]["content"]
+        )
+        assert "Task started" in deferred_frame.messages[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_start_task_tool_failure_stays_quiet(self):
         agent = _make_voice_agent()
         result = {"success": False, "error": "already running"}
         agent._handle_start_task = AsyncMock(return_value=result)
@@ -816,8 +908,45 @@ class TestTaskToolWrappers:
         params.result_callback.assert_awaited_once()
         assert params.result_callback.await_args.args[0] == {"result": result}
         properties = params.result_callback.await_args.kwargs["properties"]
-        assert properties.run_llm is True
-        assert agent._assistant_cycle_active is True
+        assert properties.run_llm is False
+        assert agent._assistant_cycle_active is False
+        assert len(agent._deferred_frames) == 0
+
+    @pytest.mark.asyncio
+    async def test_start_task_tool_active_personal_task_queues_blocked_event(self):
+        from pipecat.frames.frames import LLMMessagesAppendFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        agent = _make_voice_agent()
+        agent._tool_call_inflight = 1
+        agent._has_active_player_task = MagicMock(return_value=True)
+        agent._handle_start_task = AsyncMock()
+        params = _make_function_call_params(function_name="start_task", result_callback=AsyncMock())
+
+        await agent._handle_start_task_tool(params)
+
+        agent._handle_start_task.assert_not_called()
+        params.result_callback.assert_awaited_once()
+        assert params.result_callback.await_args.args[0] == {
+            "error": (
+                "Personal ship task is already running. "
+                "Wait for task.completed before starting another. "
+                "Tell the commander you will handle it after the current task finishes."
+            )
+        }
+        properties = params.result_callback.await_args.kwargs["properties"]
+        assert properties.run_llm is False
+        assert agent._assistant_cycle_active is False
+
+        assert len(agent._deferred_frames) == 1
+        deferred_frame, direction = agent._deferred_frames[0]
+        assert direction == FrameDirection.DOWNSTREAM
+        assert isinstance(deferred_frame, LLMMessagesAppendFrame)
+        assert deferred_frame.run_llm is True
+        assert deferred_frame.messages[0]["role"] == "user"
+        assert '<event name="task.start_blocked" task_type="player_ship">' in (
+            deferred_frame.messages[0]["content"]
+        )
 
 
 @pytest.mark.unit

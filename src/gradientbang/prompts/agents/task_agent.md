@@ -88,6 +88,8 @@ When transferring credits/warp or sending messages to corporation ships:
 
 - Use `finished(message="...")` when the task is complete
 - Use `finished(status="failed", message="...")` when the task cannot be completed due to errors or impossible conditions
+- If any credits or warp were transferred, do NOT use `finished(status="failed", ...)` just because the rest could not be transferred
+- If a transfer succeeded only partially because the recipient hit capacity, treat that as completed unless the task explicitly required the full amount
 - If the task instruction said to output specific information, put it in the message
 - If the task was to analyze information, output the answer in the message
 - If the task was to perform an action, output a summary of actions performed
@@ -119,6 +121,20 @@ trade(trade_type="sell", commodity="quantum_foam", quantity=30)
 ```
 dump_cargo(items=[{"commodity":"quantum_foam","units":1}])
 → You will receive events: salvage.created, status.update, sector.update
+```
+
+### Send Message
+
+There is no chat UI — `send_message` is the only way to send text to other players.
+
+```
+send_message(content="Greetings from sector 401!", msg_type="broadcast")
+→ You will receive events: chat.message
+```
+
+```
+send_message(content="Transferring warp now", msg_type="direct", to_player="Starfall")
+→ You will receive events: chat.message
 ```
 
 ## Task Examples

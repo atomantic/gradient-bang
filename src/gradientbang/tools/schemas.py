@@ -254,7 +254,9 @@ TRANSFER_WARP_POWER = FunctionSchema(
         "to_player_name, to_ship_id, or to_ship_name. For corporation ships, "
         "use corporation_info to find the ship_id. to_ship_id accepts a full UUID "
         "or a 6-8 hex prefix (unique in the current sector). If you see a name like "
-        "'Fast Probe [abcd1234]', the bracket suffix is just a short id."
+        "'Fast Probe [abcd1234]', the bracket suffix is just a short id. If the "
+        "recipient reaches full warp capacity mid-transfer, the event may reflect a "
+        "successful partial transfer rather than a total failure."
     ),
     properties={
         "to_player_name": {
@@ -367,7 +369,7 @@ BANK_WITHDRAW = FunctionSchema(
 
 PLACE_FIGHTERS = FunctionSchema(
     name="place_fighters",
-    description="Leave fighters behind in the current sector as a garrison.",
+    description="Leave fighters behind in the current sector as a garrison. Not allowed in Federation Space or border sectors (Neutral sectors with a direct warp to Federation Space).",
     properties={
         "sector": {
             "type": "integer",
@@ -890,13 +892,14 @@ SEND_MESSAGE = FunctionSchema(
     name="send_message",
     description=(
         "Send an in-game chat message to OTHER PLAYERS (broadcast or direct). "
-        "This is ONLY for player-to-player communication — never use this to "
-        "respond to the commander, summarize information, or perform non-messaging "
-        "actions. Only call this when the commander explicitly asks to message or "
-        "hail another player/ship. For direct messages, target by character name, "
-        "ship name, or ship_id. to_ship_id accepts a full UUID or a 6-8 hex prefix "
-        "(unique within your corporation). If you see a name like "
-        "'Fast Probe [abcd1234]', the bracket suffix is just a short id."
+        "This tool is the ONLY way to send text messages — there is no chat UI, "
+        "no text input panel, and no other messaging mechanism. When the commander "
+        "asks to message, hail, or contact another player or ship, you MUST call "
+        "this tool. "
+        "GUARD: never use this to respond to the commander, summarize information, "
+        "relay system/game events, or perform non-messaging actions. "
+        "For direct messages, target by character name, ship name, or ship_id. "
+        "to_ship_id accepts a full UUID or a 6-8 hex prefix."
     ),
     properties={
         "content": {

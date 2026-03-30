@@ -690,6 +690,8 @@ class TestCombatEventRouting:
         )
         await relay._relay_event(event)
         assert len(task_state.deferred_events) >= 1
+        _, run_llm = task_state.deferred_events[0]
+        assert run_llm is False
 
     async def test_combat_round_waiting_triggers_inference_for_participant(self):
         """ON_PARTICIPANT rule: inference triggers when player is a participant."""
@@ -882,6 +884,8 @@ class TestAppendRuleParticipant:
         await relay._relay_event(event)
         assert mock_rtvi.push_frame.call_count == 1
         assert len(task_state.deferred_events) == 1
+        _, run_llm = task_state.deferred_events[0]
+        assert run_llm is False
 
     async def test_not_appended_when_not_participant(self):
         relay, task_state, _, mock_rtvi = _make_relay()
@@ -930,7 +934,7 @@ class TestAppendRuleOwnedTask:
         )
         await relay._relay_event(event)
         assert mock_rtvi.push_frame.call_count == 1
-        assert len(task_state.deferred_events) == 1
+        assert len(task_state.deferred_events) == 0
 
     async def test_not_appended_when_not_our_task(self):
         relay, task_state, _, mock_rtvi = _make_relay()
@@ -1190,6 +1194,24 @@ class TestInferenceRules:
         _, run_llm = task_state.deferred_events[0]
         assert run_llm is True
 
+    async def test_course_plot_with_matching_request(self):
+        """course.plot stays inference-triggering for matching voice requests."""
+        relay, task_state, _, _ = _make_relay()
+        relay._onboarding_pending = False
+        task_state.recent_request_ids.add("req-course")
+        event = _make_event(
+            "course.plot",
+            {
+                "path": [1, 5, 10],
+                "__event_context": {"scope": "direct", "reason": "direct"},
+            },
+            request_id="req-course",
+        )
+        await relay._relay_event(event)
+        assert len(task_state.deferred_events) == 1
+        _, run_llm = task_state.deferred_events[0]
+        assert run_llm is True
+
     async def test_voice_agent_without_matching_request(self):
         """InferenceRule.VOICE_AGENT — False when request_id doesn't match."""
         relay, task_state, _, _ = _make_relay()
@@ -1315,9 +1337,7 @@ class TestXmlFormat:
             },
         )
         await relay._relay_event(event)
-        assert len(task_state.deferred_events) == 1
-        content, _ = task_state.deferred_events[0]
-        assert 'task_id="task-abc"' in content
+        assert task_state.deferred_events == []
 
     async def test_combat_id_in_xml(self):
         relay, task_state, _, _ = _make_relay()

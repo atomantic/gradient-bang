@@ -30,6 +30,7 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMMessagesAppendFrame,
+    LLMRunFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.processors.frameworks.rtvi import RTVIProcessor, RTVIServerMessageFrame
@@ -109,6 +110,9 @@ class VoiceAgent(LLMAgent):
         # ── Request ID tracking ──
         self._voice_agent_request_ids: Dict[str, float] = {}
         self._voice_agent_request_queue: deque[tuple[str, float]] = deque()
+
+        # ── Coalesced context injection ──
+        self._inject_run_pending: bool = False
 
         # ── LLM response lifecycle ──
         self._llm_response_inflight: bool = False
@@ -254,12 +258,6 @@ class VoiceAgent(LLMAgent):
         Returns:
             True if the report was fired, False if skipped.
         """
-        if self._assistant_cycle_active:
-            logger.debug("VoiceAgent: idle report skipped (assistant cycle active)")
-            return False
-        if self.tool_call_active:
-            logger.debug("VoiceAgent: idle report skipped (tool call active)")
-            return False
         if not self.task_groups:
             logger.debug("VoiceAgent: idle report skipped (no active tasks)")
             return False
@@ -269,17 +267,15 @@ class VoiceAgent(LLMAgent):
             return False
         logger.debug("VoiceAgent: idle report triggered, {} active task(s)", len(self.task_groups))
         self._last_idle_report_at = now
-        await self.queue_frame(
-            LLMMessagesAppendFrame(
-                messages=[{"role": "user", "content": (
-                    "<idle_check>The player has been quiet. "
-                    "In one sentence only, briefly say what's happening with current tasks. "
-                    "Vary your phrasing from any previous idle updates. "
-                    "Do not acknowledge this prompt. Do not say more than one sentence."
-                    "</idle_check>"
-                )}],
-                run_llm=True,
-            )
+        await self._inject_context(
+            [{"role": "user", "content": (
+                "<idle_check>The player has been quiet. "
+                "In one sentence only, briefly say what's happening with current tasks. "
+                "Vary your phrasing from any previous idle updates. "
+                "Do not acknowledge this prompt. Do not say more than one sentence."
+                "</idle_check>"
+            )}],
+            run_llm=True,
         )
         return True
 
@@ -359,13 +355,45 @@ class VoiceAgent(LLMAgent):
     async def process_deferred_tool_frames(
         self, frames: list[tuple[Frame, FrameDirection]]
     ) -> list[tuple[Frame, FrameDirection]]:
-        # Silently append deferred events to context without triggering inference.
-        # The tool result already gets its own inference via function calling.
-        # Task completions bypass deferral entirely (delivered via super().queue_frame).
+        # Deferred event-driven tool results still need one follow-up inference
+        # once the real data is in context. Coalesce multiple deferred triggers
+        # into a single run to avoid the duplicate-output regressions this path
+        # was originally added to prevent. Task completions still bypass deferral
+        # entirely via super().queue_frame().
+        needs_inference = False
         for f, d in frames:
             if isinstance(f, LLMMessagesAppendFrame) and f.run_llm:
+                needs_inference = True
                 f.run_llm = False
+        if needs_inference:
+            frames.append((LLMRunFrame(), FrameDirection.DOWNSTREAM))
         return frames
+
+    async def _inject_context(self, messages: list[dict], *, run_llm: bool = True) -> None:
+        """Append context and coalesce a single follow-up LLM run when needed."""
+        frame = LLMMessagesAppendFrame(messages=messages, run_llm=run_llm)
+
+        if self.tool_call_active:
+            await self.queue_frame(frame)
+            return
+
+        if run_llm:
+            frame.run_llm = False
+            await super().queue_frame(frame)
+            if not self._inject_run_pending:
+                self._inject_run_pending = True
+                asyncio.create_task(self._emit_coalesced_run())
+            return
+
+        await super().queue_frame(frame)
+
+    async def _emit_coalesced_run(self) -> None:
+        """Send a single LLMRunFrame after yielding to accumulate same-tick injections."""
+        try:
+            await asyncio.sleep(0)
+            await super().queue_frame(LLMRunFrame())
+        finally:
+            self._inject_run_pending = False
 
     # ── Request ID tracking ────────────────────────────────────────────
 
@@ -1229,7 +1257,6 @@ class VoiceAgent(LLMAgent):
         # immediately without calling the handler — nudge the LLM to wait.
         ship_id = (params.arguments or {}).get("ship_id")
         if not ship_id and self._has_active_player_task():
-            self._begin_assistant_response_cycle()
             await params.result_callback(
                 {
                     "error": (
@@ -1238,16 +1265,33 @@ class VoiceAgent(LLMAgent):
                         "Tell the commander you will handle it after the current task finishes."
                     )
                 },
-                properties=FunctionCallResultProperties(run_llm=True),
+                properties=FunctionCallResultProperties(run_llm=False),
             )
+            event_xml = (
+                '<event name="task.start_blocked" task_type="player_ship">\n'
+                "Personal ship task already running. Handle the next personal-ship action "
+                "after the current task finishes.\n"
+                "</event>"
+            )
+            await self._inject_context([{"role": "user", "content": event_xml}], run_llm=True)
             return
 
         result = await self._handle_start_task(params)
-        self._begin_assistant_response_cycle()
         await params.result_callback(
             {"result": result},
-            properties=FunctionCallResultProperties(run_llm=True),
+            properties=FunctionCallResultProperties(run_llm=False),
         )
+        if result.get("success"):
+            task_id = str(result.get("task_id", "")).strip()
+            task_type = str(result.get("task_type", "player_ship")).strip() or "player_ship"
+            summary = str(result.get("message", "Task started")).strip() or "Task started"
+
+            attrs = ['name="task.started"']
+            if task_id:
+                attrs.append(f'task_id="{task_id}"')
+            attrs.append(f'task_type="{task_type}"')
+            event_xml = f"<event {' '.join(attrs)}>\n{summary}\n</event>"
+            await self._inject_context([{"role": "user", "content": event_xml}], run_llm=True)
 
     async def _handle_stop_task_tool(self, params: FunctionCallParams):
         result = await self._handle_stop_task(params)
