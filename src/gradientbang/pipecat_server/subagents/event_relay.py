@@ -309,14 +309,19 @@ EVENT_CONFIGS: dict[str, EventConfig] = {
     ),
     "combat.ended": EventConfig(
         append=AppendRule.PARTICIPANT,
-        inference=InferenceRule.ALWAYS,
+        # round_resolved already carries the player-facing outcome; a second
+        # ended-triggered inference makes the voice agent restate the same
+        # toll/combat resolution.
+        inference=InferenceRule.NEVER,
         priority=Priority.LOW,
         xml_context_key="combat_id",
         voice_summary=_summarize_combat_ended,
     ),
     "combat.action_accepted": EventConfig(
         append=AppendRule.PARTICIPANT,
-        inference=InferenceRule.ALWAYS,
+        # Keep the accepted action in context, but don't wake the LLM for it.
+        # The user-facing update should come from round_resolved / round_waiting.
+        inference=InferenceRule.NEVER,
         xml_context_key="combat_id",
         voice_summary=_summarize_combat_action,
     ),

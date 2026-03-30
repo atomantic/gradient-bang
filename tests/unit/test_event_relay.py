@@ -690,6 +690,8 @@ class TestCombatEventRouting:
         )
         await relay._relay_event(event)
         assert len(task_state.deferred_events) >= 1
+        _, run_llm = task_state.deferred_events[0]
+        assert run_llm is False
 
     async def test_combat_round_waiting_triggers_inference_for_participant(self):
         """ON_PARTICIPANT rule: inference triggers when player is a participant."""
@@ -882,6 +884,8 @@ class TestAppendRuleParticipant:
         await relay._relay_event(event)
         assert mock_rtvi.push_frame.call_count == 1
         assert len(task_state.deferred_events) == 1
+        _, run_llm = task_state.deferred_events[0]
+        assert run_llm is False
 
     async def test_not_appended_when_not_participant(self):
         relay, task_state, _, mock_rtvi = _make_relay()

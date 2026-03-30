@@ -1,12 +1,17 @@
 import asyncio
 import os
 import uuid
+from typing import Any
 from dotenv import load_dotenv
 from loguru import logger
 
 BOT_INSTANCE_ID: str | None = None
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    Frame,
+    LLMMessagesAppendFrame,
     LLMFullResponseStartFrame,
     TTSUpdateSettingsFrame,
 )
@@ -33,6 +38,7 @@ from pipecat.utils.context.llm_context_summarization import (
     LLMAutoContextSummarizationConfig,
     LLMContextSummaryConfig,
 )
+from gradientbang.pipecat_server.frames import TaskActivityFrame, UserTextInputFrame
 from gradientbang.pipecat_server.s3_smart_turn import S3SmartTurnAnalyzerV3
 from gradientbang.utils.llm_factory import (
     LLMProvider,
@@ -216,6 +222,93 @@ async def bot_startup(
     )
 
     return rtvi, local_api_server, character_id, character_display_name, game_client, stt, tts
+
+
+class IdleReportController(FrameProcessor):
+    """Drive idle task updates off the shared Pipecat idle controller."""
+
+    def __init__(
+        self,
+        *,
+        voice_agent: Any,
+        idle_controller: Any,
+        idle_report_time: float,
+        idle_report_cooldown: float,
+    ):
+        super().__init__()
+        self._voice_agent = voice_agent
+        self._idle_controller = idle_controller
+        self._idle_report_time = float(idle_report_time)
+        self._idle_report_cooldown = float(idle_report_cooldown)
+        self._bot_speaking = False
+        self._ignore_next_bot_speech = False
+
+    async def _arm_timer(self, *, restart: bool) -> None:
+        self._idle_controller._user_idle_timeout = self._idle_report_time
+        if not restart:
+            return
+        if self._bot_speaking:
+            return
+        if self._idle_controller._user_turn_in_progress:
+            return
+        if self._idle_controller._function_calls_in_progress > 0:
+            return
+        await self._idle_controller._start_idle_timer()
+
+    async def _reset(self, *, restart: bool) -> None:
+        self._ignore_next_bot_speech = False
+        self._voice_agent.reset_idle_report_cooldown()
+        await self._arm_timer(restart=restart)
+
+    @staticmethod
+    def _is_activity_frame(frame: Frame) -> bool:
+        if isinstance(frame, (TaskActivityFrame, UserTextInputFrame)):
+            return True
+
+        if not isinstance(frame, LLMMessagesAppendFrame) or not frame.messages:
+            return False
+
+        last = frame.messages[-1]
+        if not isinstance(last, dict) or last.get("role") != "user":
+            return False
+
+        content = last.get("content")
+        if not isinstance(content, str):
+            return False
+
+        stripped = content.lstrip()
+        if stripped.startswith("<idle_check>"):
+            return False
+
+        return stripped.startswith("<event")
+
+    async def on_user_turn_idle(self) -> None:
+        if await self._voice_agent.on_idle_report():
+            self._ignore_next_bot_speech = True
+            self._idle_controller._user_idle_timeout = self._idle_report_cooldown + 0.1
+            await self._idle_controller._start_idle_timer()
+
+    async def on_user_turn_started(self) -> None:
+        await self._reset(restart=False)
+
+    async def process_frame(self, frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if direction == FrameDirection.DOWNSTREAM:
+            if isinstance(frame, BotStartedSpeakingFrame):
+                self._bot_speaking = True
+                if not self._ignore_next_bot_speech:
+                    await self._reset(restart=False)
+            elif isinstance(frame, BotStoppedSpeakingFrame):
+                self._bot_speaking = False
+                if self._ignore_next_bot_speech:
+                    self._ignore_next_bot_speech = False
+                else:
+                    await self._arm_timer(restart=False)
+            elif self._is_activity_frame(frame):
+                await self._reset(restart=True)
+
+        await self.push_frame(frame, direction)
 
 
 async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
@@ -409,7 +502,6 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
     from gradientbang.subagents.runner import AgentRunner
     from gradientbang.subagents.types import AgentReadyData
 
-    from gradientbang.pipecat_server.frames import TaskActivityFrame
     from gradientbang.pipecat_server.subagents.event_relay import EventRelay
     from gradientbang.pipecat_server.subagents.voice_agent import VoiceAgent
 
@@ -480,6 +572,7 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
                     ParallelPipeline(
                         [
                             bridge,
+                            idle_report_activity,
                             post_llm_gate,
                             token_usage_metrics,
                             say_text_voice_guard,
@@ -515,34 +608,20 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
 
     # ── Event handlers ─────────────────────────────────────────────────
 
-    idle_report_count = 0
-    IDLE_REPORT_INCREMENT_SECS = 1.0
+    idle_report_activity = IdleReportController(
+        voice_agent=voice_agent,
+        idle_controller=user_aggregator._user_idle_controller,
+        idle_report_time=idle_report_time,
+        idle_report_cooldown=float(os.getenv("BOT_IDLE_REPORT_COOLDOWN", "30")),
+    )
 
     @user_aggregator.event_handler("on_user_turn_idle")
     async def on_user_turn_idle(aggregator):
-        nonlocal idle_report_count
-        if await voice_agent.on_idle_report():
-            idle_report_count += 1
-            user_aggregator._user_idle_controller._user_idle_timeout = (
-                idle_report_time + idle_report_count * IDLE_REPORT_INCREMENT_SECS
-            )
-        elif voice_agent.task_groups:
-            # Tasks running but report was skipped (cooldown). Restart the
-            # timer with the remaining cooldown so it fires again later —
-            # otherwise the timer dies because BotStoppedSpeakingFrame
-            # never fires when we don't speak.
-            remaining = voice_agent.idle_report_cooldown_remaining()
-            if remaining > 0:
-                user_aggregator._user_idle_controller._user_idle_timeout = remaining + 0.5
-                await user_aggregator._user_idle_controller._start_idle_timer()
+        await idle_report_activity.on_user_turn_idle()
 
     @user_aggregator.event_handler("on_user_turn_started")
     async def on_user_turn_started(aggregator, strategy):
-        nonlocal idle_report_count
-        if idle_report_count > 0:
-            idle_report_count = 0
-            user_aggregator._user_idle_controller._user_idle_timeout = idle_report_time
-        voice_agent.reset_idle_report_cooldown()
+        await idle_report_activity.on_user_turn_started()
 
     @rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):

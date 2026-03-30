@@ -258,12 +258,6 @@ class VoiceAgent(LLMAgent):
         Returns:
             True if the report was fired, False if skipped.
         """
-        if self._assistant_cycle_active:
-            logger.debug("VoiceAgent: idle report skipped (assistant cycle active)")
-            return False
-        if self.tool_call_active:
-            logger.debug("VoiceAgent: idle report skipped (tool call active)")
-            return False
         if not self.task_groups:
             logger.debug("VoiceAgent: idle report skipped (no active tasks)")
             return False
@@ -273,26 +267,17 @@ class VoiceAgent(LLMAgent):
             return False
         logger.debug("VoiceAgent: idle report triggered, {} active task(s)", len(self.task_groups))
         self._last_idle_report_at = now
-        await self.queue_frame(
-            LLMMessagesAppendFrame(
-                messages=[{"role": "user", "content": (
-                    "<idle_check>The player has been quiet. "
-                    "In one sentence only, briefly say what's happening with current tasks. "
-                    "Vary your phrasing from any previous idle updates. "
-                    "Do not acknowledge this prompt. Do not say more than one sentence."
-                    "</idle_check>"
-                )}],
-                run_llm=True,
-            )
+        await self._inject_context(
+            [{"role": "user", "content": (
+                "<idle_check>The player has been quiet. "
+                "In one sentence only, briefly say what's happening with current tasks. "
+                "Vary your phrasing from any previous idle updates. "
+                "Do not acknowledge this prompt. Do not say more than one sentence."
+                "</idle_check>"
+            )}],
+            run_llm=True,
         )
         return True
-
-    def idle_report_cooldown_remaining(self) -> float:
-        """Seconds remaining before the next idle report is allowed."""
-        if self._last_idle_report_at == 0:
-            return 0.0
-        elapsed = time.time() - self._last_idle_report_at
-        return max(0.0, _IDLE_REPORT_COOLDOWN_SECS - elapsed)
 
     def reset_idle_report_cooldown(self) -> None:
         """Reset idle report cooldown so the next report can fire immediately."""

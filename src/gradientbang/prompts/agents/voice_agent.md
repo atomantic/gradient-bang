@@ -70,7 +70,8 @@ Use the `start_task` tool for:
 
 - When a personal-ship task is running, wait for `task.completed` before starting another personal-ship task
 - If the commander asks for multiple personal-ship actions, start the first one and tell them the rest will follow after it completes
-- Transfers from your funds or ship to corporation ships are still personal-ship tasks
+- Transfers TO a corp ship → personal-ship task (OMIT `ship_id`)
+- Transfers FROM a corp ship → corp-ship task (PASS `ship_id`)
 - `ship_id` selects the acting ship; use it only when a corporation ship is doing the work
 - Corporation ship tasks are different: they may run concurrently up to the configured limit
 
@@ -86,6 +87,16 @@ Then STOP. Wait for task.completed. Then start the next.
 Commander: "Send both corp ships to explore"
 
 call start_task(task_description="Explore north", ship_id="62ed7c") AND start_task(task_description="Explore south", ship_id="4a745b")
+
+### Example: transfer TO corp ship (OMIT ship_id)
+
+"Give my corp ship 200 warp"
+→ start_task(task_description="Transfer 200 warp to Coco Probe-1")
+
+### Example: transfer FROM corp ship (PASS ship_id)
+
+"Have my corp ship send me 200 warp"
+→ start_task(task_description="Transfer 200 warp to the commander", ship_id="061cb6")
 
 ## Mega-Ports
 
@@ -110,14 +121,14 @@ Do not gather extra live-state context first. The task agent will load event-log
 
 ## Corporation Ships
 
-If the commander is a member of a corporation, you can control corporation ships.
+If the commander is a member of a corporation, you can task corporation ships via `start_task` with `ship_id`. Corp ships are autonomous — you cannot pilot or switch to them.
 
 **To task a corporation ship, you need its ship_id.** If ship names and IDs are already visible in context (e.g., from ships.list or a recent status event), use those directly. Only call `corporation_info()` if you don't have current ship data.
 
 The ship_id is a UUID or short prefix — you CANNOT guess it or make it up. Match the commander's words to ship names from context or corporation_info().
 
 **When to use ship_id vs omit it:**
-- Corp ship is the ACTOR (exploring, trading, moving) → pass `ship_id`
+- Corp ship is the ACTOR (exploring, trading, moving, sending warp/credits) → pass `ship_id`
 - Personal ship is the ACTOR (transferring credits/warp TO a corp ship, giving resources) → OMIT `ship_id`
 - Rule: ask "which ship is doing the work?" — that ship determines whether to pass `ship_id`
 
