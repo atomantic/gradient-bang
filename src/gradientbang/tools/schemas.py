@@ -413,6 +413,30 @@ COLLECT_FIGHTERS = FunctionSchema(
     required=["sector", "quantity"],
 )
 
+SET_GARRISON_MODE = FunctionSchema(
+    name="set_garrison_mode",
+    description="Change the operating mode of a garrison in a sector. Only works on your own garrison or a corp mate's garrison.",
+    properties={
+        "sector": {
+            "type": "integer",
+            "description": "Sector ID containing the garrison",
+            "minimum": 0,
+        },
+        "mode": {
+            "type": "string",
+            "enum": ["offensive", "defensive", "toll"],
+            "description": "New behavior mode for the garrison",
+        },
+        "toll_amount": {
+            "type": "integer",
+            "description": "Credits required to pass when mode is toll",
+            "minimum": 0,
+            "default": 0,
+        },
+    },
+    required=["sector", "mode"],
+)
+
 # ── Corporation ───────────────────────────────────────────────────────
 
 CREATE_CORPORATION = FunctionSchema(
@@ -709,7 +733,7 @@ EVENT_QUERY = FunctionSchema(
         },
         "filter_event_type": {
             "type": "string",
-            "description": "Filter to a specific event type. e.g., 'task.start', 'task.finish', 'movement.complete' (for player's own movements), 'garrison.character_moved' (for monitoring events in a sector where we have placed fighters)",
+            "description": "Filter to a specific event type. e.g., 'session.started', 'task.start', 'task.finish', 'movement.complete' (for player's own movements), 'garrison.character_moved' (for monitoring events in a sector where we have placed fighters)",
         },
         "filter_string_match": {
             "type": "string",
@@ -1037,4 +1061,5 @@ GAME_METHOD_ALIASES = {
     "bank_withdraw": "withdraw_from_bank",
     "place_fighters": "combat_leave_fighters",
     "collect_fighters": "combat_collect_fighters",
+    "set_garrison_mode": "combat_set_garrison_mode",
 }

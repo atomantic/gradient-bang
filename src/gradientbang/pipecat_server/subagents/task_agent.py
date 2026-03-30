@@ -103,6 +103,7 @@ ASYNC_TOOL_COMPLETIONS = {
     "salvage_collect": "salvage.collected",
     "place_fighters": "garrison.deployed",
     "collect_fighters": "garrison.collected",
+    "set_garrison_mode": "garrison.mode_changed",
     "event_query": "event.query",
     "purchase_fighters": "fighter.purchase",
     "purchase_ship": "status.update",

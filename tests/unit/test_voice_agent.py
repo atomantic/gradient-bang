@@ -48,7 +48,7 @@ def _make_function_call_params(
 EXPECTED_TOOLS = {
     "my_status", "plot_course", "list_known_ports", "rename_ship",
     "rename_corporation", "create_corporation", "corporation_info",
-    "leave_corporation",
+    "leave_corporation", "set_garrison_mode",
     "leaderboard_resources", "ship_definitions", "send_message",
     "combat_initiate", "combat_action", "load_game_info",
     "start_task", "stop_task", "steer_task", "query_task_progress",
