@@ -805,6 +805,40 @@ class TestVoiceToolErrorWrapping:
 @pytest.mark.unit
 class TestTaskToolWrappers:
     @pytest.mark.asyncio
+    async def test_start_task_tool_success_queues_started_event(self):
+        from pipecat.frames.frames import LLMMessagesAppendFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        agent = _make_voice_agent()
+        agent._tool_call_inflight = 1
+        result = {
+            "success": True,
+            "message": "Task started",
+            "task_id": "task_abc123",
+            "task_type": "player_ship",
+        }
+        agent._handle_start_task = AsyncMock(return_value=result)
+        params = _make_function_call_params(function_name="start_task", result_callback=AsyncMock())
+
+        await agent._handle_start_task_tool(params)
+
+        params.result_callback.assert_awaited_once()
+        assert params.result_callback.await_args.args[0] == {"result": result}
+        properties = params.result_callback.await_args.kwargs["properties"]
+        assert properties.run_llm is False
+
+        assert len(agent._deferred_frames) == 1
+        deferred_frame, direction = agent._deferred_frames[0]
+        assert direction == FrameDirection.DOWNSTREAM
+        assert isinstance(deferred_frame, LLMMessagesAppendFrame)
+        assert deferred_frame.run_llm is True
+        assert deferred_frame.messages[0]["role"] == "user"
+        assert '<event name="task.started" task_id="task_abc123" task_type="player_ship">' in (
+            deferred_frame.messages[0]["content"]
+        )
+        assert "Task started" in deferred_frame.messages[0]["content"]
+
+    @pytest.mark.asyncio
     async def test_start_task_tool_failure_stays_quiet(self):
         agent = _make_voice_agent()
         result = {"success": False, "error": "already running"}
@@ -818,6 +852,7 @@ class TestTaskToolWrappers:
         properties = params.result_callback.await_args.kwargs["properties"]
         assert properties.run_llm is False
         assert agent._assistant_cycle_active is False
+        assert len(agent._deferred_frames) == 0
 
 
 @pytest.mark.unit

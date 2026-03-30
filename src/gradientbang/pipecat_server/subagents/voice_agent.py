@@ -111,6 +111,9 @@ class VoiceAgent(LLMAgent):
         self._voice_agent_request_ids: Dict[str, float] = {}
         self._voice_agent_request_queue: deque[tuple[str, float]] = deque()
 
+        # ── Coalesced context injection ──
+        self._inject_run_pending: bool = False
+
         # ── LLM response lifecycle ──
         self._llm_response_inflight: bool = False
 
@@ -380,6 +383,32 @@ class VoiceAgent(LLMAgent):
         if needs_inference:
             frames.append((LLMRunFrame(), FrameDirection.DOWNSTREAM))
         return frames
+
+    async def _inject_context(self, messages: list[dict], *, run_llm: bool = True) -> None:
+        """Append context and coalesce a single follow-up LLM run when needed."""
+        frame = LLMMessagesAppendFrame(messages=messages, run_llm=run_llm)
+
+        if self.tool_call_active:
+            await self.queue_frame(frame)
+            return
+
+        if run_llm:
+            frame.run_llm = False
+            await super().queue_frame(frame)
+            if not self._inject_run_pending:
+                self._inject_run_pending = True
+                asyncio.create_task(self._emit_coalesced_run())
+            return
+
+        await super().queue_frame(frame)
+
+    async def _emit_coalesced_run(self) -> None:
+        """Send a single LLMRunFrame after yielding to accumulate same-tick injections."""
+        try:
+            await asyncio.sleep(0)
+            await super().queue_frame(LLMRunFrame())
+        finally:
+            self._inject_run_pending = False
 
     # ── Request ID tracking ────────────────────────────────────────────
 
@@ -1261,6 +1290,17 @@ class VoiceAgent(LLMAgent):
             {"result": result},
             properties=FunctionCallResultProperties(run_llm=False),
         )
+        if result.get("success"):
+            task_id = str(result.get("task_id", "")).strip()
+            task_type = str(result.get("task_type", "player_ship")).strip() or "player_ship"
+            summary = str(result.get("message", "Task started")).strip() or "Task started"
+
+            attrs = ['name="task.started"']
+            if task_id:
+                attrs.append(f'task_id="{task_id}"')
+            attrs.append(f'task_type="{task_type}"')
+            event_xml = f"<event {' '.join(attrs)}>\n{summary}\n</event>"
+            await self._inject_context([{"role": "user", "content": event_xml}], run_llm=True)
 
     async def _handle_stop_task_tool(self, params: FunctionCallParams):
         result = await self._handle_stop_task(params)
