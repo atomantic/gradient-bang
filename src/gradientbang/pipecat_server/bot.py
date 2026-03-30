@@ -533,6 +533,7 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
         if idle_report_count > 0:
             idle_report_count = 0
             user_aggregator._user_idle_controller._user_idle_timeout = idle_report_time
+        voice_agent.reset_idle_report_cooldown()
 
     @rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):

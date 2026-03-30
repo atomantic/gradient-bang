@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 # ── Constants ─────────────────────────────────────────────────────────────
 
 MAX_CORP_SHIP_TASKS = 3
+_IDLE_REPORT_COOLDOWN_SECS = 30.0
 REQUEST_ID_CACHE_TTL_SECONDS = 15 * 60
 REQUEST_ID_CACHE_MAX_SIZE = 5000
 TASK_RESPONSE_COOLDOWN_SECONDS = 1.5
@@ -115,6 +116,9 @@ class VoiceAgent(LLMAgent):
         # ── Bot speaking state (for task response cooldown) ──
         self._bot_speaking: bool = False
         self._bot_stopped_speaking_at: float = 0.0
+
+        # ── Idle report cooldown ──
+        self._last_idle_report_at: float = 0.0
 
         # ── Assistant response lifecycle ──
         self._assistant_cycle_active: bool = False
@@ -259,13 +263,18 @@ class VoiceAgent(LLMAgent):
         if not self.task_groups:
             logger.debug("VoiceAgent: idle report skipped (no active tasks)")
             return False
+        now = time.time()
+        if now - self._last_idle_report_at < _IDLE_REPORT_COOLDOWN_SECS:
+            logger.debug("VoiceAgent: idle report skipped (cooldown)")
+            return False
         logger.debug("VoiceAgent: idle report triggered, {} active task(s)", len(self.task_groups))
+        self._last_idle_report_at = now
         await self.queue_frame(
             LLMMessagesAppendFrame(
                 messages=[{"role": "user", "content": (
                     "<idle_check>The player has been quiet. "
                     "In one sentence only, briefly say what's happening with current tasks. "
-                    'Example: "Still navigating to sector 4867." '
+                    "Vary your phrasing from any previous idle updates. "
                     "Do not acknowledge this prompt. Do not say more than one sentence."
                     "</idle_check>"
                 )}],
@@ -273,6 +282,10 @@ class VoiceAgent(LLMAgent):
             )
         )
         return True
+
+    def reset_idle_report_cooldown(self) -> None:
+        """Reset idle report cooldown so the next report can fire immediately."""
+        self._last_idle_report_at = 0.0
 
     # ── Properties ─────────────────────────────────────────────────────
 
