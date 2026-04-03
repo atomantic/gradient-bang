@@ -13,6 +13,7 @@ import { useMapControls } from "./useMapControls"
 import { useTaskControls } from "./useTaskControls"
 import { useTradeControls } from "./useTradeControls"
 import { useLeaderboardControls } from ".ladle/useLeaderboardControls"
+import { useOnboardingControls } from "./onboarding/useOnboardingControls"
 import { useQuestControls } from ".ladle/useQuestControls"
 
 import { SHIP_DEFINITIONS } from "@/types/ships"
@@ -53,7 +54,11 @@ export const LevaControls = ({
     ["Connect"]: buttonGroup({
       label: "Connection",
       opts: {
-        ["Connect"]: () => client.startBotAndConnect({ endpoint, requestData: {} }),
+        ["Connect"]: () => {
+          const params = useGameStore.getState().getBotStartParams()
+          console.debug("[LADLE CONNECT", { params, endpoint })
+          client.startBotAndConnect({ ...params, endpoint })
+        },
         ["Disconnect"]: () => client.disconnect(),
       },
     }),
@@ -390,6 +395,10 @@ export const LevaControls = ({
             Tasks: "task_history",
             Corp: "corp",
             Waves: "logs",
+            ContractsPanel: "contracts-panel",
+            ShipCard: "ship-card",
+            ShipVitals: "ship-vitals",
+            ShipFuel: "ship-fuel",
           },
         },
         ["Highlight Target"]: button((get) => {
@@ -411,6 +420,7 @@ export const LevaControls = ({
   useCombatControls()
   useTradeControls()
   useQuestControls()
+  useOnboardingControls()
 
   return <Leva hidden={hidden} />
 }

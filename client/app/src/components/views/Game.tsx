@@ -28,6 +28,8 @@ import { SectorTitleBanner } from "@/components/SectorTitleBanner"
 import { Starfield } from "@/components/Starfield"
 import { ToastContainer } from "@/components/toasts/ToastContainer"
 import { TopBar } from "@/components/TopBar"
+import { TutorialOverlay } from "@/components/TutorialOverlay"
+import { TutorialRevealOverlay } from "@/components/TutorialRevealOverlay"
 import { UIModeToggle } from "@/components/UIModeToggle"
 import { useNotificationSound } from "@/hooks/useNotificationSound"
 import { usePlayerRank } from "@/hooks/usePlayerRank"
@@ -41,6 +43,8 @@ const enabledCx = "pointer-events-auto opacity-100"
 export const Game = () => {
   const uiState = useGameStore.use.uiState()
   const uiMode = useGameStore.use.uiMode()
+  const tutorialActive = useGameStore((state) => state.tutorialActive)
+  const tutorialRevealed = useGameStore((state) => state.tutorialRevealed)
   const asidePanelRef = usePanelRef()
   const lookMode = useGameStore.use.lookMode()
   const setLookMode = useGameStore.use.setLookMode?.()
@@ -199,7 +203,17 @@ export const Game = () => {
           panelRef={asidePanelRef}
           onResize={handleAsideResize}
         >
-          <aside className="h-full border-transparent border-l-(length:--separator) border-l-background flex-col hidden @sm/aside:flex">
+          <aside
+            id="aside"
+            className="relative h-full border-transparent border-l-(length:--separator) border-l-background flex-col hidden @sm/aside:flex"
+            data-tutorial={
+              tutorialActive ?
+                tutorialRevealed.includes("aside") ?
+                  "revealing"
+                : "hidden"
+              : undefined
+            }
+          >
             <header className="pb-separator flex flex-col gap-separator bg-black">
               <PlayerShipPanel />
             </header>
@@ -212,6 +226,7 @@ export const Game = () => {
               <RHSPanelContainer />
             </div>
             <RHSPanelNav />
+            <TutorialRevealOverlay id="aside" />
           </aside>
           {isCollapsed && (
             <div className="h-full flex-col items-center justify-center flex bg-background/80">
@@ -241,6 +256,7 @@ export const Game = () => {
       <HighlightOverlay />
       <QuestAcceptedOverlay />
       <QuestCompleteNotification />
+      <TutorialOverlay />
       <PipecatClientAudio />
     </>
   )
