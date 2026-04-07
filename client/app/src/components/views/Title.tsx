@@ -28,6 +28,7 @@ export const Title = ({ onViewNext }: { onViewNext: () => void }) => {
   const [state, setState] = useState<"idle" | "join">("idle")
   const [error, setError] = useState<boolean>(false)
   const hasStartedMusic = useRef(false)
+  const titleVideoRef = useRef<HTMLVideoElement>(null)
 
   const handleSignIn = async () => {
     setIsLoading(true)
@@ -69,6 +70,7 @@ export const Title = ({ onViewNext }: { onViewNext: () => void }) => {
     )
     setCharacterId(characterId)
     if (isNewCharacter) {
+      titleVideoRef.current?.pause()
       setActiveModal("intro_tutorial")
     } else {
       onViewNext()
@@ -79,6 +81,7 @@ export const Title = ({ onViewNext }: { onViewNext: () => void }) => {
     <div className="relative h-screen w-screen overflow-hidden">
       <div className="absolute inset-0">
         <video
+          ref={titleVideoRef}
           src={TitleVideo}
           autoPlay
           muted

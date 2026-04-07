@@ -7,6 +7,7 @@ import useGameStore from "@/stores/game"
 
 export const JoinStatus = ({ handleStart }: { handleStart: () => void }) => {
   const gameState = useGameStore.use.gameState()
+  const setActiveModal = useGameStore.use.setActiveModal()
   const gameStateMessage = useGameStore.use.gameStateMessage?.()
   const diamondFXInstance = useGameStore.use.diamondFXInstance?.()
   const statusPanelRef = useRef<HTMLDivElement>(null)
@@ -48,6 +49,7 @@ export const JoinStatus = ({ handleStart }: { handleStart: () => void }) => {
         onAnimationComplete={() => {
           if (gameState !== "not_ready") return
           handleStart()
+          setActiveModal(undefined)
         }}
       >
         <div id="status-panel" className="screen p-4" ref={statusPanelRef}>

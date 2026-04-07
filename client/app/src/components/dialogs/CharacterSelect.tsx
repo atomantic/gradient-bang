@@ -46,9 +46,7 @@ export const CharacterSelectDialog = ({
             }}
           />
         : <CharacterSelectComponent
-            onCharacterSelect={(characterId, isNewCharacter) =>
-              onCharacterSelect(characterId, isNewCharacter)
-            }
+            onCharacterSelect={(characterId) => onCharacterSelect(characterId, false)}
             onIsCreating={() => setIsCreatingNewCharacter(true)}
           />
         }

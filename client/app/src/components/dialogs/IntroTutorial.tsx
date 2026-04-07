@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react"
 
+import { AnimatePresence, motion } from "motion/react"
+
+import RadialGrad from "@/assets/images/radial-grad-md.png"
 import { Button } from "@/components/primitives/Button"
 import { Card, CardContent, CardFooter } from "@/components/primitives/Card"
 import { Divider } from "@/components/primitives/Divider"
+import { InfoIconMD } from "@/components/svg/InfoIconMD"
 import useAudioStore from "@/stores/audio"
 import useGameStore from "@/stores/game"
 
@@ -12,7 +16,6 @@ const TUTORIAL_VIDEO_URL =
   "https://api.gradient-bang.com/storage/v1/object/public/GB%20Public/tutorial.mp4"
 
 export const IntroTutorial = ({ onContinue }: { onContinue: () => void }) => {
-  const setActiveModal = useGameStore.use.setActiveModal()
   const activeModal = useGameStore.use.activeModal?.()
   const isOpen = activeModal?.modal === "intro_tutorial"
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -27,17 +30,14 @@ export const IntroTutorial = ({ onContinue }: { onContinue: () => void }) => {
 
   const handleVideoEnded = () => {
     setShowConfirmTutorial(true)
-    //setActiveModal(undefined)
-    //onContinue()
   }
 
   const handleContinue = (bypassTutorial: boolean = false) => {
-    // Hide the active model
-    setActiveModal(undefined)
+    // Note: we do not hide the modal here to prevent FOUS
 
-    // Set bypass tutorial flag to pass to bot connect method
-    if (bypassTutorial) {
-      useGameStore.getState().updateSettings({ bypassTutorial: true })
+    useGameStore.getState().setBypassTutorial(bypassTutorial)
+    if (!bypassTutorial) {
+      useGameStore.getState().handleTutorialStart()
     }
 
     // Continue to connect
@@ -49,7 +49,7 @@ export const IntroTutorial = ({ onContinue }: { onContinue: () => void }) => {
       modalName="intro_tutorial"
       title="Welcome"
       size="full"
-      overlayVariant="none"
+      overlayVariant="dots"
       noPadding
       dismissOnClickOutside={false}
       showCloseButton={false}
@@ -57,32 +57,57 @@ export const IntroTutorial = ({ onContinue }: { onContinue: () => void }) => {
       overlayClassName="z-[100]"
     >
       <div
-        className="relative w-full h-full flex items-center justify-center bg-black"
+        className="relative w-full h-full flex items-center justify-center bg-background"
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
-        {showConfirmTutorial ?
-          <Card className="absolute max-w-xl bg-black/80 z-20 elbow">
-            <CardContent className="flex flex-col gap-ui-sm">
-              <h2 className="text-white text-base uppercase font-bold">
-                Start new player tutorial?
-              </h2>
-              <p className="text-white text-sm text-pretty mb-ui-sm leading-relaxed">
-                This tutorial will guide you through the basics of the gameplay, UI and voice agent
-                commands. Recommended for first time players.
-              </p>
-              <Divider variant="dashed" className="h-4 text-accent" />
-            </CardContent>
-            <CardFooter className="flex flex-row gap-ui-sm justify-end">
-              <Button variant="ghost" size="lg" onClick={() => handleContinue(true)}>
-                No, skip tutorial
-              </Button>
-              <Button size="lg" onClick={() => handleContinue()}>
-                Yes (recommended)
-              </Button>
-            </CardFooter>
-          </Card>
-        : <>
+        <AnimatePresence>
+          {showConfirmTutorial && (
+            <motion.div
+              key="confirm-tutorial"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ duration: 0.3, ease: "easeOut" }}
+            >
+              <div className="dialog-dots opacity-20 absolute inset-0 z-0" />
+
+              <div className="max-w-2xl relative">
+                <img
+                  src={RadialGrad}
+                  alt=""
+                  className="absolute -top-32 left-1/2 -translate-x-1/2 opacity-40 z-10 select-none"
+                />
+                <div className="absolute -top-10 left-1/2 -translate-x-1/2 size-20 flex items-center justify-center border border-accent-foreground shadow-long shadow-black/40 bg-background z-50">
+                  <InfoIconMD className="text-terminal size-8" />
+                </div>
+
+                <Card className="bg-background/50 elbow z-20">
+                  <CardContent className="flex flex-col gap-ui-md relative pt-10">
+                    <h2 className="text-white text-base uppercase font-bold">
+                      Start new player tutorial?
+                    </h2>
+                    <p className="text-white text-sm text-pretty mb-ui-sm leading-relaxed">
+                      This tutorial will guide you through the basics of the gameplay, UI and voice
+                      agent commands. Recommended for first time players.
+                    </p>
+                    <Divider variant="dashed" className="h-4 text-accent" />
+                  </CardContent>
+                  <CardFooter className="flex flex-row gap-ui-sm justify-end">
+                    <Button variant="ghost" size="lg" onClick={() => handleContinue(true)}>
+                      No, skip tutorial
+                    </Button>
+                    <Button size="lg" onClick={() => handleContinue()}>
+                      Yes (recommended)
+                    </Button>
+                  </CardFooter>
+                </Card>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {!showConfirmTutorial && (
+          <>
             <video
               ref={videoRef}
               src={TUTORIAL_VIDEO_URL}
@@ -99,7 +124,7 @@ export const IntroTutorial = ({ onContinue }: { onContinue: () => void }) => {
               </Button>
             </div>
           </>
-        }
+        )}
       </div>
     </BaseDialog>
   )
