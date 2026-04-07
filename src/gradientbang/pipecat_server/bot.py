@@ -237,6 +237,7 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
     character_name_hint = body.get("character_name")
     voice_id = body.get("voice_id") or DEFAULT_VOICE_ID
     personality_tone = body.get("personality_tone", "").strip()
+    bypass_tutorial = bool(body.get("bypass_tutorial", False))
 
     (
         rtvi,
@@ -613,12 +614,16 @@ async def run_bot(transport, runner_args: RunnerArguments, **kwargs):
             await game_client.resume_event_delivery()
 
             # Activate the correct agent based on first visit status
-            if is_first_visit:
+            if is_first_visit and not bypass_tutorial:
                 logger.info("First visit detected, activating ScriptedAgent")
                 mute_strategy.force_mute = True
                 event_relay._onboarding_complete = True
                 await main_agent.activate_agent("scripted")
             else:
+                if is_first_visit and bypass_tutorial:
+                    logger.info(
+                        "First visit detected but bypass_tutorial=True; skipping ScriptedAgent"
+                    )
                 await main_agent.activate_agent(
                     "player",
                     args=LLMAgentActivationArgs(messages=messages, run_llm=False),

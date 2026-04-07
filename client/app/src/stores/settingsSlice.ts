@@ -3,8 +3,9 @@ import { type StateCreator } from "zustand"
 import type { PerformanceProfile } from "@gradient-bang/starfield"
 import { type APIRequest } from "@pipecat-ai/client-js"
 
-import { DEFAULT_VOICE_ID, getPersonalityTone } from "@/types/constants"
 import { getLocalSettings, setLocalSettings } from "@/utils/settings"
+
+import { DEFAULT_VOICE_ID, getPersonalityTone } from "@/types/constants"
 
 export interface SettingsSlice {
   settings: {
@@ -24,10 +25,12 @@ export interface SettingsSlice {
     qualityPreset: PerformanceProfile
     saveSettings: boolean
     defaultUIMode: UIMode
+    bypassTutorial: boolean
     personality: string
     voice: string
   }
   setSettings: (settings: SettingsSlice["settings"]) => void
+  updateSettings: (settings: Partial<SettingsSlice["settings"]>) => void
 
   botConfig: {
     startBotParams: APIRequest
@@ -54,6 +57,7 @@ const defaultSettings = {
   qualityPreset: "auto",
   saveSettings: true,
   defaultUIMode: "tasks",
+  bypassTutorial: false,
   personality: "stock_firmware",
   voice: "ec1e269e-9ca0-402f-8a18-58e0e022355a",
 }
@@ -68,6 +72,15 @@ export const createSettingsSlice: StateCreator<SettingsSlice> = (set, get) => ({
     set(
       produce((state) => {
         state.settings = settings
+      })
+    )
+  },
+  updateSettings: (settings: Partial<SettingsSlice["settings"]>) => {
+    const merged = { ...get().settings, ...settings }
+    setLocalSettings(merged)
+    set(
+      produce((state) => {
+        state.settings = merged
       })
     )
   },
@@ -110,6 +123,7 @@ export const createSettingsSlice: StateCreator<SettingsSlice> = (set, get) => ({
         ...(getPersonalityTone(get().settings.personality) && {
           personality_tone: getPersonalityTone(get().settings.personality),
         }),
+        bypass_tutorial: get().settings.bypassTutorial,
       },
     }
 

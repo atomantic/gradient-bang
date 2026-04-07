@@ -51,7 +51,6 @@ export const Game = () => {
   const [isCollapsed, setIsCollapsed] = useState(false)
 
   useVoiceCapture()
-
   usePlayerRank()
   useNotificationSound()
 

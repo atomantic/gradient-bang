@@ -104,6 +104,7 @@ export const createUISlice: StateCreator<UISlice> = (set, get) => ({
   tutorialActive: false,
   tutorialStep: null,
   tutorialRevealed: [] as string[],
+
   handleTutorialStart: () =>
     set(
       produce((state) => {
@@ -112,6 +113,7 @@ export const createUISlice: StateCreator<UISlice> = (set, get) => ({
         state.tutorialRevealed = []
       })
     ),
+
   handleTutorialStep: (step: { target?: string; step: number }) => {
     set(
       produce((state) => {

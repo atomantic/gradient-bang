@@ -136,6 +136,8 @@ export interface GameSlice extends GameState {
   createFetchPromise: (actionType: ActionType) => Promise<void>
   resolveFetchPromise: (actionType: ActionType) => void
   rejectFetchPromise: (actionType: ActionType, error?: unknown) => void
+
+  disconnectAndReset: () => void
 }
 
 const createGameSlice: StateCreator<GameStoreState, [], [], GameSlice> = (set, get) => ({
@@ -477,6 +479,11 @@ const createGameSlice: StateCreator<GameStoreState, [], [], GameSlice> = (set, g
     ),
 
   setGameState: (gameState: GameInitState) => set({ gameState }),
+
+  disconnectAndReset: () => {
+    usePipecatClientStore.getState().client?.disconnect()
+    window.location.reload()
+  },
 })
 
 // Selectors
