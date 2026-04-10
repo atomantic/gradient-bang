@@ -128,6 +128,12 @@ class VoiceAgent(LLMAgent):
         self._speech_start_grace_task: Optional[asyncio.Task] = None
         self._start_task_lock: asyncio.Lock = asyncio.Lock()
         self._locked_ships: set[str] = set()  # character_ids with an active task
+        # Tracks task.finished messages received from the bus that are
+        # waiting for on_task_response to deliver task.completed (after the
+        # cycle-idle wait + cooldown). While > 0, on_idle_report skips firing
+        # so the model doesn't narrate a premature "task is done" status and
+        # then re-acknowledge when task.completed actually lands.
+        self._task_completion_pending: int = 0
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -270,6 +276,16 @@ class VoiceAgent(LLMAgent):
         """
         if not self.task_groups:
             logger.debug("VoiceAgent: idle report skipped (no active tasks)")
+            return False
+        if self._task_completion_pending > 0:
+            # A task.finished message has been received and task.completed
+            # delivery is waiting in the cooldown window. Skipping the idle
+            # report prevents a premature "task is done" narration that gets
+            # immediately followed by the real task.completed ack.
+            logger.debug(
+                "VoiceAgent: idle report skipped ({} task completion(s) pending)",
+                self._task_completion_pending,
+            )
             return False
         logger.debug("VoiceAgent: idle report triggered, {} active task(s)", len(self.task_groups))
         await self._inject_context(
@@ -1015,23 +1031,30 @@ class VoiceAgent(LLMAgent):
         # before delivering task completion. Uses super().queue_frame() to bypass
         # LLMAgent's defer_tool_frames mechanism which would coalesce the task
         # completion into the tool result's inference.
-        while self.tool_call_active:
-            await asyncio.sleep(0.05)
+        # While we're waiting for the cycle + cooldown, on_idle_report must
+        # not fire — otherwise the model narrates a premature "task is done"
+        # status and then re-acknowledges when task.completed actually lands.
+        self._task_completion_pending += 1
+        try:
+            while self.tool_call_active:
+                await asyncio.sleep(0.05)
 
-        if self._assistant_cycle_active:
-            logger.debug("VoiceAgent: waiting for assistant response cycle to go idle")
-        await self._assistant_cycle_idle_event.wait()
+            if self._assistant_cycle_active:
+                logger.debug("VoiceAgent: waiting for assistant response cycle to go idle")
+            await self._assistant_cycle_idle_event.wait()
 
-        elapsed = time.monotonic() - self._bot_stopped_speaking_at
-        remaining = TASK_RESPONSE_COOLDOWN_SECONDS - elapsed
-        if remaining > 0:
-            logger.debug(
-                "VoiceAgent: cooling down {:.2f}s before task response inference",
-                remaining,
-            )
-            await asyncio.sleep(remaining)
+            elapsed = time.monotonic() - self._bot_stopped_speaking_at
+            remaining = TASK_RESPONSE_COOLDOWN_SECONDS - elapsed
+            if remaining > 0:
+                logger.debug(
+                    "VoiceAgent: cooling down {:.2f}s before task response inference",
+                    remaining,
+                )
+                await asyncio.sleep(remaining)
 
-        await self._queue_task_completion_event(event_xml)
+            await self._queue_task_completion_event(event_xml)
+        finally:
+            self._task_completion_pending -= 1
 
         # Release ship lock (both player and corp)
         ship_character_id = child._character_id if child else None
@@ -1281,7 +1304,7 @@ class VoiceAgent(LLMAgent):
                 resolved = self._find_task_agent_by_task_id(str(task_id_arg).strip())
                 if not resolved:
                     return {"success": False, "error": f"Task {task_id_arg} not found"}
-                framework_task_id, _child = resolved
+                framework_task_id, child = resolved
             else:
                 # Default: find player ship task
                 child = next(
@@ -1296,6 +1319,13 @@ class VoiceAgent(LLMAgent):
                 )
                 if framework_task_id is None:
                     return {"success": False, "error": "No active task group for player ship"}
+
+            # Release the ship lock synchronously so a follow-up start_task in
+            # the same turn can proceed. on_task_response releases the lock
+            # too, but it blocks on `tool_call_active` which is held by *this*
+            # tool call — so the async release can't land until we return.
+            # `.discard()` is idempotent, so the later release is a no-op.
+            self._locked_ships.discard(child._character_id)
 
             await self.cancel_task(framework_task_id, reason="Cancelled by user")
             return {"success": True, "message": "Task cancelled", "task_id": framework_task_id}
@@ -1443,7 +1473,15 @@ class VoiceAgent(LLMAgent):
                 attrs.append(f'task_id="{task_id}"')
             attrs.append(f'task_type="{task_type}"')
             event_xml = f"<event {' '.join(attrs)}>\n{summary}\n</event>"
-            await self._inject_context([{"role": "user", "content": event_xml}], run_llm=True)
+            # For a genuinely new task, trigger inference so the model can
+            # announce the newly-started task. For a steered (busy-ship) path,
+            # suppress inference — the model already narrated the steer in the
+            # same turn as the tool call; a fresh inference here would produce
+            # a duplicate ack. Keep the event in context either way.
+            await self._inject_context(
+                [{"role": "user", "content": event_xml}],
+                run_llm=not steered,
+            )
 
     async def _handle_stop_task_tool(self, params: FunctionCallParams):
         result = await self._handle_stop_task(params)
@@ -1464,13 +1502,19 @@ class VoiceAgent(LLMAgent):
                 properties=FunctionCallResultProperties(run_llm=True),
             )
         else:
+            # Suppress post-tool inference so we don't get a second,
+            # rephrased ack. The model already narrated the steer in the
+            # same turn as the tool call (per the Critical Rule); a fresh
+            # inference driven by the tool result just produces a duplicate.
+            # Mirrors the pattern used by _handle_stop_task_tool and the
+            # guard comments in event_relay.py for task.finish / quest.step.
             summary = result.get("summary") if isinstance(result, dict) else None
             payload = {"summary": summary or "steer_task completed."}
             if isinstance(result, dict) and result.get("task_id"):
                 payload["task_id"] = result["task_id"]
-            self._begin_assistant_response_cycle()
             await params.result_callback(
-                payload, properties=FunctionCallResultProperties(run_llm=True)
+                payload,
+                properties=FunctionCallResultProperties(run_llm=False),
             )
 
     async def _handle_query_task_progress_tool(self, params: FunctionCallParams):
