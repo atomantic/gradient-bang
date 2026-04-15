@@ -149,9 +149,10 @@ export const Title = ({ onViewNext }: { onViewNext: () => void }) => {
                   <a
                     href="https://www.gradient-bang.com/join"
                     target="_blank"
-                    rel="noopener noreferrer w-fit"
+                    rel="noopener noreferrer"
+                    className="self-center w-fit text-center"
                   >
-                    <p className="text-xs uppercase text-subtle-foreground hover:text-foreground w-fit">
+                    <p className="text-xs uppercase text-subtle-foreground hover:text-foreground">
                       Need an account? Sign up here!
                     </p>
                   </a>
