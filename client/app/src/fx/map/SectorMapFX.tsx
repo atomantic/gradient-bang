@@ -2139,6 +2139,8 @@ function truncateText(ctx: CanvasRenderingContext2D, text: string, maxWidth: num
 
 type ShipInfo = { ship_name: string; ship_type: string }
 
+type ShipLabelHitBox = { sectorId: number; x: number; y: number; w: number; h: number }
+
 /** Render ship count labels at top-left of hexes (compact badges only, skips hovered) */
 function renderShipLabels(
   ctx: CanvasRenderingContext2D,
@@ -2150,7 +2152,8 @@ function renderShipLabels(
   cameraState: CameraState,
   config: SectorMapConfigBase,
   ships: Map<number, ShipInfo[]> | undefined,
-  hoveredSectorId: number | null = null
+  hoveredSectorId: number | null = null,
+  hitBoxesOut?: ShipLabelHitBox[]
 ) {
   if (!ships || ships.size === 0) return
 
@@ -2170,9 +2173,6 @@ function renderShipLabels(
     const shipList = ships.get(node.id)
     if (!shipList || shipList.length === 0) return
 
-    // Skip hovered sector — rendered by renderShipTooltip on top
-    if (node.id === hoveredSectorId) return
-
     const shipCount = shipList.length
 
     // Position at top-left of hex (angle 2*PI/3 = 120 degrees)
@@ -2182,8 +2182,6 @@ function renderShipLabels(
     const edgeWorldY = worldPos.y + hexSize * Math.sin(angle)
 
     const screenPos = worldToScreen(edgeWorldX, edgeWorldY, width, height, cameraState)
-
-    const labelOpacity = 1
 
     // Calculate text metrics
     const text = shipCount.toString()
@@ -2203,6 +2201,23 @@ function renderShipLabels(
     // Position label to the left of the edge point (anchor at right edge)
     const labelX = screenPos.x - labelOffset
     const labelY = screenPos.y
+
+    // Recorded even for the hovered sector so hover stays sticky when the
+    // label is replaced by the tooltip.
+    if (hitBoxesOut) {
+      hitBoxesOut.push({
+        sectorId: node.id,
+        x: labelX - totalWidth - padding,
+        y: labelY - ascent - padding,
+        w: totalWidth + padding * 2,
+        h: textHeight + padding * 2,
+      })
+    }
+
+    // Skip drawing for hovered sector — tooltip drawn by renderShipTooltip
+    if (node.id === hoveredSectorId) return
+
+    const labelOpacity = 1
 
     ctx.save()
     ctx.translate(labelX, labelY)
@@ -2481,11 +2496,14 @@ function renderWithCameraStateAndInteraction(
   hoveredSectorId: number | null,
   animatingSectorId: number | null,
   hoverScale: number,
-  courseAnimationOffset = 0
+  courseAnimationOffset = 0,
+  shipLabelHitBoxesOut?: ShipLabelHitBox[]
 ) {
   const { width, height, config, coursePlot, ships } = props
   const ctx = setupCanvas(canvas, props, width, height)
   if (!ctx) return
+
+  if (shipLabelHitBoxesOut) shipLabelHitBoxesOut.length = 0
 
   ctx.fillStyle = config.uiStyles.background.color
   ctx.fillRect(0, 0, width, height)
@@ -2630,7 +2648,8 @@ function renderWithCameraStateAndInteraction(
     cameraState,
     config,
     ships,
-    hoveredSectorId
+    hoveredSectorId,
+    shipLabelHitBoxesOut
   )
   renderPortLabels(
     ctx,
@@ -2696,6 +2715,7 @@ export function createSectorMapController(
   let courseAnimationOffset = 0
 
   let hoveredSectorId: number | null = null
+  const shipLabelHitBoxes: ShipLabelHitBox[] = []
   let onNodeClickCallback: ((node: MapSectorNode | null) => void) | null = null
   let onNodeEnterCallback: ((node: MapSectorNode) => void) | null = null
   let onNodeExitCallback: ((node: MapSectorNode) => void) | null = null
@@ -2887,11 +2907,31 @@ export function createSectorMapController(
     startHoverAnimation()
   }
 
+  const findSectorAtShipLabel = (screenX: number, screenY: number): MapSectorNode | null => {
+    if (!currentCameraState || shipLabelHitBoxes.length === 0) return null
+    // Walk in reverse so later-drawn labels take precedence on overlap
+    for (let i = shipLabelHitBoxes.length - 1; i >= 0; i--) {
+      const box = shipLabelHitBoxes[i]
+      if (
+        screenX >= box.x &&
+        screenX <= box.x + box.w &&
+        screenY >= box.y &&
+        screenY <= box.y + box.h
+      ) {
+        return currentCameraState.filteredData.find((s) => s.id === box.sectorId) ?? null
+      }
+    }
+    return null
+  }
+
   const handleMouseMove = (event: MouseEvent) => {
     if (!currentProps.config.hoverable || isMovingToSector) return
 
     const pos = getCanvasMousePosition(event)
-    const sector = findSectorAtMouse(pos.x, pos.y)
+    // Ship label hit-boxes take precedence so the expanded tooltip stays sticky
+    // when it overlaps neighboring hexes; also makes icons hoverable when the
+    // map is zoomed out and hexes are smaller than the ship-count badge.
+    const sector = findSectorAtShipLabel(pos.x, pos.y) ?? findSectorAtMouse(pos.x, pos.y)
     const newHoveredId = sector?.id ?? null
 
     if (newHoveredId !== hoveredSectorId) {
@@ -2929,7 +2969,7 @@ export function createSectorMapController(
     if (!currentProps.config.clickable || isMovingToSector) return
 
     const pos = getCanvasMousePosition(event)
-    const sector = findSectorAtMouse(pos.x, pos.y)
+    const sector = findSectorAtShipLabel(pos.x, pos.y) ?? findSectorAtMouse(pos.x, pos.y)
 
     if (onNodeClickCallback) {
       onNodeClickCallback(sector)
@@ -3082,7 +3122,8 @@ export function createSectorMapController(
       hoveredSectorId,
       animatingSectorId,
       hoverScale,
-      courseAnimationOffset
+      courseAnimationOffset,
+      shipLabelHitBoxes
     )
   }
 
@@ -3126,7 +3167,8 @@ export function createSectorMapController(
       hoveredSectorId,
       animatingSectorId,
       hoverScale,
-      courseAnimationOffset
+      courseAnimationOffset,
+      shipLabelHitBoxes
     )
   }
 
@@ -3227,7 +3269,8 @@ export function createSectorMapController(
         null,
         null,
         1,
-        courseAnimationOffset
+        courseAnimationOffset,
+        shipLabelHitBoxes
       )
 
       if (fadeProgress < 1) {
