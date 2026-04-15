@@ -411,13 +411,16 @@ class AsyncGameClient(BaseAsyncGameClient):
         self,
         units: int,
         character_id: str,
+        pay_from_bank: bool = False,
     ) -> Dict[str, Any]:
         if character_id != self._character_id:
             raise ValueError(
                 f"AsyncGameClient is bound to character_id {self._character_id!r}; "
                 f"received {character_id!r}"
             )
-        payload = {"character_id": character_id, "units": units}
+        payload: Dict[str, Any] = {"character_id": character_id, "units": units}
+        if pay_from_bank:
+            payload["pay_from_bank"] = True
         return await self._request("recharge_warp_power", payload)
 
     async def transfer_warp_power(

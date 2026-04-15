@@ -90,10 +90,14 @@ Recharge warp power at a mega-port in Federation Space.
 
 ```
 recharge_warp_power(units=1000)
+recharge_warp_power(units=1000, pay_from_bank=true)
 ```
 
 - Costs 2 credits per unit
 - Must be at a mega-port in Federation Space
+- `pay_from_bank=true` charges the bill to the actor's megabank account
+  instead of the ship's on-hand credits. Use this to refuel a probe (or any
+  ship you control) remotely, without first transferring credits to it.
 
 ### Finding Mega-Ports
 

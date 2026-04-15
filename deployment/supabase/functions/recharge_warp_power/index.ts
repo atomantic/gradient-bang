@@ -85,12 +85,14 @@ Deno.serve(traced("recharge_warp_power", async (req, trace) => {
     ? await canonicalizeCharacterId(actorCharacterLabel)
     : null;
   const adminOverride = optionalBoolean(payload, "admin_override") ?? false;
+  const payFromBank = optionalBoolean(payload, "pay_from_bank") ?? false;
   const taskId = optionalString(payload, "task_id");
 
   trace.setInput({
     characterId,
     actorCharacterId,
     adminOverride,
+    payFromBank,
     taskId,
     units: payload.units ?? null,
     requestId,
@@ -126,6 +128,7 @@ Deno.serve(traced("recharge_warp_power", async (req, trace) => {
       requestId,
       actorCharacterId,
       adminOverride,
+      payFromBank,
       taskId,
     );
     sHandle.end();
@@ -173,6 +176,7 @@ async function handleRecharge(
   requestId: string,
   actorCharacterId: string | null,
   adminOverride: boolean,
+  payFromBank: boolean,
   taskId: string | null,
 ): Promise<Response> {
   const source = buildEventSource("recharge_warp_power", requestId);
@@ -225,19 +229,57 @@ async function handleRecharge(
   const unitsToBuy = Math.min(unitsRequested, remainingCapacity);
   const totalCost = unitsToBuy * PRICE_PER_UNIT;
   const currentCredits = ship.credits ?? 0;
-  if (currentCredits < totalCost) {
+
+  const payerCharacterId = payFromBank
+    ? (actorCharacterId ?? characterId)
+    : null;
+  let payerBankAfter = 0;
+
+  if (payFromBank) {
+    let payerName: string | null = character.name;
+    let payerBankBefore = character.credits_in_megabank ?? 0;
+    if (payerCharacterId !== characterId) {
+      const payerLookup = await supabase
+        .from("characters")
+        .select("name, credits_in_megabank")
+        .eq("character_id", payerCharacterId)
+        .maybeSingle();
+      if (payerLookup.error) {
+        console.error("recharge_warp_power.load_payer", payerLookup.error);
+        throw new RechargeWarpPowerError(
+          "Failed to load payer bank account",
+          500,
+        );
+      }
+      if (!payerLookup.data) {
+        throw new RechargeWarpPowerError("Payer character not found", 404);
+      }
+      payerName = payerLookup.data.name ?? payerCharacterId;
+      payerBankBefore = payerLookup.data.credits_in_megabank ?? 0;
+    }
+    if (payerBankBefore < totalCost) {
+      throw new RechargeWarpPowerError(
+        `Insufficient megabank credits. Need ${totalCost} but ${payerName ?? payerCharacterId} only has ${payerBankBefore}`,
+        400,
+      );
+    }
+    payerBankAfter = payerBankBefore - totalCost;
+  } else if (currentCredits < totalCost) {
     throw new RechargeWarpPowerError(
       `Insufficient credits. Need ${totalCost} but only have ${currentCredits}`,
       400,
     );
   }
 
+  const shipPatch: Record<string, unknown> = {
+    current_warp_power: currentWarpPower + unitsToBuy,
+  };
+  if (!payFromBank) {
+    shipPatch.credits = currentCredits - totalCost;
+  }
   const shipUpdate = await supabase
     .from("ship_instances")
-    .update({
-      current_warp_power: currentWarpPower + unitsToBuy,
-      credits: currentCredits - totalCost,
-    })
+    .update(shipPatch)
     .eq("ship_id", ship.ship_id)
     .select();
 
@@ -249,13 +291,34 @@ async function handleRecharge(
     throw new RechargeWarpPowerError("No ship updated - ship not found", 404);
   }
 
+  if (payFromBank) {
+    const bankUpdate = await supabase
+      .from("characters")
+      .update({ credits_in_megabank: payerBankAfter })
+      .eq("character_id", payerCharacterId)
+      .select();
+    if (bankUpdate.error) {
+      console.error("recharge_warp_power.update_bank", bankUpdate.error);
+      throw new RechargeWarpPowerError(
+        "Failed to debit megabank for refuel",
+        500,
+      );
+    }
+    if (!bankUpdate.data || bankUpdate.data.length === 0) {
+      throw new RechargeWarpPowerError(
+        "No bank account debited - payer not found",
+        404,
+      );
+    }
+  }
+
   await supabase
     .from("characters")
     .update({ last_active: new Date().toISOString() })
     .eq("character_id", characterId);
 
   const timestamp = new Date().toISOString();
-  const warpPayload = {
+  const warpPayload: Record<string, unknown> = {
     source,
     character_id: characterLabel,
     ship_id: ship.ship_id,
@@ -267,8 +330,13 @@ async function handleRecharge(
     timestamp,
     new_warp_power: currentWarpPower + unitsToBuy,
     warp_power_capacity: shipDefinition.warp_power_capacity,
-    new_credits: currentCredits - totalCost,
+    new_credits: payFromBank ? currentCredits : currentCredits - totalCost,
+    paid_from: payFromBank ? "bank" : "ship",
   };
+  if (payFromBank) {
+    warpPayload.payer_character_id = payerCharacterId;
+    warpPayload.payer_bank_credits = payerBankAfter;
+  }
 
   await emitCharacterEvent({
     supabase,
@@ -286,13 +354,17 @@ async function handleRecharge(
   const updatedShip = {
     ...ship,
     current_warp_power: currentWarpPower + unitsToBuy,
-    credits: currentCredits - totalCost,
+    credits: payFromBank ? currentCredits : currentCredits - totalCost,
   };
+  const updatedCharacter =
+    payFromBank && payerCharacterId === characterId
+      ? { ...character, credits_in_megabank: payerBankAfter }
+      : character;
   const pgClient = await acquirePgClient();
   let statusPayload: Record<string, unknown>;
   try {
     statusPayload = await pgBuildStatusPayload(pgClient, characterId, {
-      character,
+      character: updatedCharacter,
       ship: updatedShip,
       shipDefinition,
       actorCharacterId,
@@ -311,6 +383,28 @@ async function handleRecharge(
     taskId,
     corpId: character.corporation_id,
   });
+
+  if (payFromBank && payerCharacterId && payerCharacterId !== characterId) {
+    const payerPgClient = await acquirePgClient();
+    let payerStatus: Record<string, unknown>;
+    try {
+      payerStatus = await pgBuildStatusPayload(
+        payerPgClient,
+        payerCharacterId,
+        { actorCharacterId },
+      );
+    } finally {
+      payerPgClient.release();
+    }
+    await emitCharacterEvent({
+      supabase,
+      characterId: payerCharacterId,
+      eventType: "status.update",
+      payload: payerStatus,
+      requestId,
+      taskId,
+    });
+  }
 
   return successResponse({ request_id: requestId });
 }

@@ -223,13 +223,25 @@ DUMP_CARGO = FunctionSchema(
 
 RECHARGE_WARP_POWER = FunctionSchema(
     name="recharge_warp_power",
-    description="Recharge warp power at a mega-port in Federation Space (2 credits per unit)",
+    description=(
+        "Recharge warp power at a mega-port in Federation Space (2 credits per unit). "
+        "Set pay_from_bank=true to charge the bill to your megabank account instead of "
+        "the ship's on-hand credits — useful for remotely funding a probe's refuel "
+        "without needing to be in the same sector to transfer credits."
+    ),
     properties={
         "units": {
             "type": "integer",
             "description": "Number of warp power units to recharge",
             "minimum": 1,
-        }
+        },
+        "pay_from_bank": {
+            "type": "boolean",
+            "description": (
+                "When true, debit the cost from your megabank balance instead of the "
+                "ship's on-hand credits. Lets the ship's owner pay for refuel remotely."
+            ),
+        },
     },
     required=["units"],
 )

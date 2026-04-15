@@ -510,6 +510,65 @@ Deno.test({
 });
 
 // ============================================================================
+// Group 8b: recharge_warp_power — pay_from_bank
+// ============================================================================
+
+Deno.test({
+  name: "megaport_services — recharge_warp_power pay_from_bank",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    await t.step("reset and setup: ship empty, bank funded", async () => {
+      await resetDatabase([P1]);
+      await apiOk("join", { character_id: p1Id });
+      await setShipWarpPower(p1ShipId, 100);
+      await setShipCredits(p1ShipId, 0);
+      await setMegabankBalance(p1Id, 10000);
+    });
+
+    await t.step("happy path: 50 units billed to bank", async () => {
+      const result = await apiOk("recharge_warp_power", {
+        character_id: p1Id,
+        units: 50,
+        pay_from_bank: true,
+      });
+      assertExists(result);
+    });
+
+    await t.step("DB: warp recharged, ship credits untouched, bank debited", async () => {
+      const ship = await queryShip(p1ShipId);
+      assertExists(ship);
+      assertEquals(ship.current_warp_power, 150, "100 + 50 = 150");
+      assertEquals(ship.credits, 0, "ship credits unchanged when paid from bank");
+
+      const char = await queryCharacter(p1Id);
+      assertExists(char);
+      // 50 units * 2 credits = 100 debited from bank
+      assertEquals(char.credits_in_megabank, 9900);
+    });
+
+    await t.step("fails: insufficient bank balance", async () => {
+      await setShipWarpPower(p1ShipId, 0);
+      await setMegabankBalance(p1Id, 50); // need 200 for 100 units
+      const result = await api("recharge_warp_power", {
+        character_id: p1Id,
+        units: 100,
+        pay_from_bank: true,
+      });
+      assertEquals(result.status, 400);
+      assert(result.body.error?.includes("megabank"));
+    });
+
+    await t.step("DB: failed bank-pay leaves ship state untouched", async () => {
+      const ship = await queryShip(p1ShipId);
+      assertExists(ship);
+      assertEquals(ship.current_warp_power, 0);
+      assertEquals(ship.credits, 0);
+    });
+  },
+});
+
+// ============================================================================
 // Group 9: purchase_fighters — in hyperspace
 // ============================================================================
 

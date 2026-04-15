@@ -1731,13 +1731,18 @@ class AsyncGameClient:
         return await self._request("purchase_fighters", payload)
 
     async def recharge_warp_power(
-        self, units: int, character_id: str
+        self,
+        units: int,
+        character_id: str,
+        pay_from_bank: bool = False,
     ) -> Dict[str, Any]:
         """Recharge warp power at a mega-port depot in Federation Space.
 
         Args:
             units: Number of warp power units to recharge
             character_id: Character recharging warp power (must match bound ID)
+            pay_from_bank: Charge the actor's megabank balance instead of the
+                ship's on-hand credits (lets the owner remotely fund a probe).
 
         Returns:
             Minimal RPC acknowledgment (warp updates arrive via ``warp.purchase``)
@@ -1752,9 +1757,10 @@ class AsyncGameClient:
                 f"received {character_id!r}"
             )
 
-        ack = await self._request(
-            "recharge_warp_power", {"character_id": character_id, "units": units}
-        )
+        payload: Dict[str, Any] = {"character_id": character_id, "units": units}
+        if pay_from_bank:
+            payload["pay_from_bank"] = True
+        ack = await self._request("recharge_warp_power", payload)
         return ack
 
     async def transfer_warp_power(
