@@ -725,6 +725,12 @@ class TaskAgent(LLMAgent):
             await self._complete_task()
             return
 
+        # After cancel, don't kick off further inferences. task.finish
+        # has its own handler above and still runs; other events still
+        # log and append to context but must not trigger new LLM work.
+        if self._cancelled:
+            return
+
         reason = event_name or "unknown"
         self._record_inference_reason(reason)
 
@@ -756,6 +762,15 @@ class TaskAgent(LLMAgent):
     async def _handle_function_call(self, params: FunctionCallParams) -> None:
         tool_name = params.function_name
         arguments = params.arguments or {}
+
+        # If cancel has fired, discard any still-in-flight tool calls
+        # emitted by a stream that hadn't finished when cancel arrived.
+        if self._cancelled:
+            await params.result_callback(
+                {"error": "Task cancelled"},
+                properties=FunctionCallResultProperties(run_llm=False),
+            )
+            return
 
         # Corp ship restriction guard
         if self._is_corp_ship and tool_name in PLAYER_ONLY_TOOLS:
@@ -1338,8 +1353,12 @@ class TaskAgent(LLMAgent):
         task.add_done_callback(self._pending_task_output_tasks.discard)
 
     async def _drain_pending_task_outputs(self) -> None:
-        while self._pending_task_output_tasks:
-            pending = tuple(self._pending_task_output_tasks)
+        # Snapshot once. Outputs scheduled after this (e.g. LLM frames
+        # still flowing while cancel is being processed) are not
+        # awaited — otherwise on_task_cancelled spins indefinitely
+        # while the frame processor keeps flushing thinking tokens.
+        pending = tuple(self._pending_task_output_tasks)
+        if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def _send_task_output(self, text: str, message_type: TaskOutputType) -> None:
