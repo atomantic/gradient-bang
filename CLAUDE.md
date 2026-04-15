@@ -56,3 +56,12 @@ See `src/gradientbang/pipecat_server/subagents/CLAUDE.md` for detailed architect
 - **Edge function integration tests** (Deno): `bash deployment/supabase/functions/tests/run_tests.sh`
 
 The Python integration test script spins up an isolated Supabase instance on different ports (54421+), seeds it via the `test_reset` edge function, runs `pytest -m integration`, and tears everything down. It does NOT touch the dev database. Pass extra pytest args after the script: `bash scripts/run-integration-tests.sh -v -k "test_movement"`.
+
+## Pull requests
+
+When opening a PR on GitHub, the description must contain only:
+
+- A few sentences at the top describing the problem being solved.
+- Terse, succinct bullet points summarizing the changes.
+
+Do not include a test plan, "Generated with Claude Code" footnote, or any other sections.
