@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-04-20
+
+### Added
+
+- Two-word passphrase invite codes (e.g. `nebula-drift`) with collision retry
+- Two-step confirm flow for `kick_corporation_member` and `join_corporation` via `corporation.kick_pending` / `corporation.join_pending` events and client confirmation modals
+- `join_corporation` and `kick_corporation_member` exposed to the voice agent; removed from TaskAgent
+- Auto-leave when joining a different corp while already in one: silent if not last member; pending-confirm if last member; refused if corp still owns ships
+- Founder rejoin carve-out on `corporation_join` (skip invite-code validation when rejoining own corp)
+- `is_founder` flag on member payloads so LLM/UI can gate founder-only actions
+- New `KickConfirmDialog` and `JoinConfirmDialog` on the client
+
 ### Changed
+
+- Founder-only authorization for `corporation_kick` and `corporation_regenerate_invite_code` (was any-member)
+- `invite_code` gated to the founder in `corporation_info` / `my_corporation` / `corporation.data` payloads; non-founders see only the notice that the founder holds it
+- `JOIN_CORPORATION` schema now requires both `corp_name` and `invite_code`; description explicitly defers to `create_corporation` for onboarding
+- Extracted shared `disbandCorporation()` helper with safety-net ship-release so a corp can never be soft-deleted while still owning ships
+- Pending events are character-scoped to the actor (not broadcast to the corp)
+- Confirm paths re-validate server-side so stale client messages can't bypass checks
+
+### Fixed
+
+- Removed literal duplicate self-kick check in `corporation_kick` handler
+- Client now handles `corporation.member_left` / `corporation.member_kicked` to refresh the corp roster
 
 ## [0.1.2] - 2026-04-19
 
