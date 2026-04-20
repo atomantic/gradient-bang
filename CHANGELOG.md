@@ -7,15 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Friendly-fire: corporation-owned ship garrisons no longer target corpmates. `loadGarrisonCombatants` was resolving owner corp via `corporation_members` alone, which doesn't include corp-ship pseudo-characters; their corp_id came back null and the round resolver treated corpmates as hostile. Same gap fixed in `combat_initiate`'s targetability check.
-- `combat_action` friendly-fire guard extended to character targets — previously only garrison targets were rejected, so a player dragged into combat with a corpmate could attack them.
-
-### Changed
-
-- New `_shared/friendly.ts` helper (`areFriendly`, `areFriendlyFromMeta`, `buildCorporationMap`) — single source of truth for combat friendly checks. `combat_garrison` and `combat_resolution` migrated to it.
-
 ## [0.1.3] - 2026-04-20
 
 ### Added
@@ -27,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Founder rejoin carve-out on `corporation_join` (skip invite-code validation when rejoining own corp)
 - `is_founder` flag on member payloads so LLM/UI can gate founder-only actions
 - New `KickConfirmDialog` and `JoinConfirmDialog` on the client
+- New `_shared/friendly.ts` helper (`areFriendly`, `areFriendlyFromMeta`, `buildCorporationMap`) — single source of truth for combat friendly checks. `combat_garrison` and `combat_resolution` migrated to it.
 
 ### Changed
 
@@ -41,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed literal duplicate self-kick check in `corporation_kick` handler
 - Client now handles `corporation.member_left` / `corporation.member_kicked` to refresh the corp roster
+- Friendly-fire: corporation-owned ship garrisons no longer target corpmates. `loadGarrisonCombatants` was resolving owner corp via `corporation_members` alone, which doesn't include corp-ship pseudo-characters; their corp_id came back null and the round resolver treated corpmates as hostile. Same gap fixed in `combat_initiate`'s targetability check.
+- `combat_action` friendly-fire guard extended to character targets — previously only garrison targets were rejected, so a player dragged into combat with a corpmate could attack them.
 
 ## [0.1.2] - 2026-04-19
 
