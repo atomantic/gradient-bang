@@ -264,21 +264,24 @@ async function handleCombatInitiate(params: {
 
   // Check garrisons if no character targets
   if (!hasTargetableOpponent && garrisons.length > 0) {
-    // Get corporation memberships for all garrison owners
-    const garrisonOwnerIds = garrisons
-      .map((g) => g.state.owner_character_id)
-      .filter((id): id is string => Boolean(id));
-    const { data: garrisonCorpData } = await supabase
-      .from("corporation_members")
-      .select("character_id, corp_id")
-      .in("character_id", garrisonOwnerIds)
-      .is("left_at", null);
-
-    const ownerCorpMap = new Map<string, string>();
-    for (const row of garrisonCorpData ?? []) {
-      if (row.character_id && row.corp_id) {
-        ownerCorpMap.set(row.character_id, row.corp_id);
-      }
+    // Garrison owner can be a real player OR a corp-ship pseudo-character.
+    // Use `getEffectiveCorporationId` (same helper as move auto-engage) so
+    // the pseudo-character case resolves via `ship_instances.owner_corporation_id`.
+    // Querying `corporation_members` alone misses corp-ship garrisons and
+    // lets the initiator start combat against a friendly corp ship.
+    const garrisonOwnerIds = Array.from(
+      new Set(
+        garrisons
+          .map((g) => g.state.owner_character_id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    );
+    const ownerCorpMap = new Map<string, string | null>();
+    for (const ownerId of garrisonOwnerIds) {
+      ownerCorpMap.set(
+        ownerId,
+        await getEffectiveCorporationId(supabase, ownerId, ownerId),
+      );
     }
 
     for (const garrison of garrisons) {
@@ -287,7 +290,7 @@ async function handleCombatInitiate(params: {
       if ((garrison.state.fighters ?? 0) <= 0) continue;
 
       // Check if garrison owner is in same corporation
-      const ownerCorpId = ownerCorpMap.get(ownerId);
+      const ownerCorpId = ownerCorpMap.get(ownerId) ?? null;
       if (initiatorCorpId && ownerCorpId === initiatorCorpId) continue;
 
       hasTargetableOpponent = true;

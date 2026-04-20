@@ -3,8 +3,10 @@ import {
   CombatantState,
   RoundActionState,
 } from './combat_types.ts';
-
-type CorporationMap = Map<string, string | null | undefined>;
+import {
+  areFriendlyFromMeta,
+  type CorporationMap,
+} from './friendly.ts';
 
 interface TollRegistryEntry {
   owner_id?: string | null;
@@ -30,21 +32,6 @@ function calculateCommit(mode: string, fighters: number): number {
   return Math.max(1, Math.min(fighters, Math.max(50, Math.floor(fighters / 2))));
 }
 
-function shareCorporation(
-  corps: CorporationMap,
-  first?: string | null,
-  second?: string | null,
-): boolean {
-  if (!first || !second) {
-    return false;
-  }
-  if (first === second) {
-    return true;
-  }
-  const firstCorp = corps.get(first) ?? null;
-  return Boolean(firstCorp && firstCorp === (corps.get(second) ?? null));
-}
-
 function buildGarrisonId(state: CombatantState): string {
   return state.combatant_id;
 }
@@ -67,13 +54,7 @@ function selectStrongestTarget(
     if (participant.owner_character_id === garrison.owner_character_id) {
       return false;
     }
-    if (
-      shareCorporation(
-        corps,
-        participant.owner_character_id ?? participant.combatant_id,
-        garrison.owner_character_id ?? garrison.combatant_id,
-      )
-    ) {
+    if (areFriendlyFromMeta(corps, participant, garrison)) {
       return false;
     }
     if (participant.is_escape_pod) {
@@ -137,18 +118,16 @@ export function buildGarrisonActions(
         const initiatorId = typeof encounter.context?.initiator === 'string'
           ? encounter.context.initiator
           : null;
+        const initiatorParticipant =
+          initiatorId ? encounter.participants[initiatorId] : undefined;
         if (
           initiatorId &&
-          encounter.participants[initiatorId] &&
-          encounter.participants[initiatorId].combatant_type === 'character' &&
-          encounter.participants[initiatorId].fighters > 0 &&
-          (encounter.participants[initiatorId].owner_character_id ?? initiatorId) !== participant.owner_character_id &&
-          !shareCorporation(
-            corps,
-            encounter.participants[initiatorId].owner_character_id ?? initiatorId,
-            participant.owner_character_id ?? buildGarrisonId(participant),
-          ) &&
-          !encounter.participants[initiatorId].is_escape_pod
+          initiatorParticipant &&
+          initiatorParticipant.combatant_type === 'character' &&
+          initiatorParticipant.fighters > 0 &&
+          (initiatorParticipant.owner_character_id ?? initiatorId) !== participant.owner_character_id &&
+          !areFriendlyFromMeta(corps, initiatorParticipant, participant) &&
+          !initiatorParticipant.is_escape_pod
         ) {
           entry.target_id = initiatorId;
         } else {

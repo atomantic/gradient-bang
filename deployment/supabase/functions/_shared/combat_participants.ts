@@ -100,18 +100,42 @@ export async function loadGarrisonCombatants(
     return [];
   }
 
-  // Query corporation memberships for garrison owners
-  const ownerIds = rows.map((r) => r.owner_id);
-  const { data: corpMemberships } = await supabase
-    .from("corporation_members")
-    .select("character_id, corp_id")
-    .in("character_id", ownerIds)
-    .is("left_at", null);
-
+  // Resolve each garrison owner's effective corporation id. Garrison owners
+  // can be either real players (corp_id lives in `characters.corporation_id`
+  // and `corporation_members`) or corp-owned ship pseudo-characters (corp_id
+  // lives in `ship_instances.owner_corporation_id`). A single query against
+  // `corporation_members` misses the pseudo case and used to cause friendly
+  // corp-ship garrisons to target corpmates — see `_shared/friendly.ts`.
+  //
+  // Two batched queries keep this O(1) per sector:
+  //   1. `characters.corporation_id` — handles real players AND pseudos
+  //      (pseudos get `corporation_id` set at ship purchase).
+  //   2. `ship_instances.owner_corporation_id` fallback — defence in depth
+  //      if a pseudo's `characters` row were ever out of sync with
+  //      `ship_instances`.
+  const uniqueOwnerIds = Array.from(new Set(rows.map((r) => r.owner_id)));
   const ownerCorpMap = new Map<string, string>();
-  for (const row of corpMemberships ?? []) {
-    if (row.character_id && row.corp_id) {
-      ownerCorpMap.set(row.character_id, row.corp_id);
+  if (uniqueOwnerIds.length > 0) {
+    const { data: ownerCharacters } = await supabase
+      .from("characters")
+      .select("character_id, corporation_id")
+      .in("character_id", uniqueOwnerIds);
+    for (const row of ownerCharacters ?? []) {
+      if (row.character_id && row.corporation_id) {
+        ownerCorpMap.set(row.character_id, row.corporation_id as string);
+      }
+    }
+    const stillMissing = uniqueOwnerIds.filter((id) => !ownerCorpMap.has(id));
+    if (stillMissing.length > 0) {
+      const { data: ownerShips } = await supabase
+        .from("ship_instances")
+        .select("ship_id, owner_corporation_id")
+        .in("ship_id", stillMissing);
+      for (const row of ownerShips ?? []) {
+        if (row.ship_id && row.owner_corporation_id) {
+          ownerCorpMap.set(row.ship_id, row.owner_corporation_id as string);
+        }
+      }
     }
   }
 

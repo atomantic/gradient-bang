@@ -46,6 +46,7 @@ import {
   setShipType,
   setShipHyperspace,
   queryCombatState,
+  setMegabankBalance,
   withPg,
 } from "./helpers.ts";
 
@@ -2956,6 +2957,308 @@ Deno.test({
         mode: "defensive",
       });
       assert(result.success, "Garrison deploy should succeed in non-adjacent sector");
+    });
+  },
+});
+
+// ============================================================================
+// Group 58: Corp-ship garrison does NOT auto-engage corpmate on sector entry
+// ============================================================================
+//
+// Regression for the friendly-fire bug caused by `loadGarrisonCombatants`
+// looking up garrison-owner corps via `corporation_members` only. Corp-ship
+// pseudo-characters aren't rows in that table, so their corp_id came back
+// null and `selectStrongestTarget` treated corpmates as hostile.
+
+Deno.test({
+  name: "combat — corp-ship garrison does not auto-engage corpmate",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    let corpId: string;
+    let inviteCode: string;
+    let corpShipId: string;
+
+    await t.step(
+      "P1 founds corp, P2 joins corp, corp ship deploys garrison in sector 3",
+      async () => {
+        await resetDatabase([P1, P2]);
+        await apiOk("join", { character_id: p1Id });
+        await apiOk("join", { character_id: p2Id });
+        await setShipCredits(p1ShipId, 100_000);
+        // Move P1 to sector 0 (mega-port) before purchasing a corp ship.
+        // test_combat_p1 defaults to sector 3 which rejects ship_purchase.
+        await setShipSector(p1ShipId, 0);
+        // Move P2 out of the target sector so it can't get caught by the
+        // offensive garrison's initial deploy. test_combat_p2 also defaults
+        // to sector 3.
+        await setShipSector(p2ShipId, 2);
+
+        const createResult = await apiOk("corporation_create", {
+          character_id: p1Id,
+          name: "Friendly Corp",
+        });
+        corpId = (createResult as Record<string, unknown>).corp_id as string;
+        inviteCode = (createResult as Record<string, unknown>)
+          .invite_code as string;
+
+        // Bring P2 into the corp BEFORE the garrison deploys so the
+        // corp-ship's deploy-time auto-engage check correctly sees P2 as a
+        // corpmate. (If P2 were non-corp at deploy time the garrison would
+        // fire on them — which would be correct behavior, just not what
+        // we're testing.)
+        await apiOk("corporation_join", {
+          character_id: p2Id,
+          corp_id: corpId,
+          invite_code: inviteCode,
+        });
+
+        await setMegabankBalance(p1Id, 100_000);
+        const purchaseResult = await apiOk("ship_purchase", {
+          character_id: p1Id,
+          ship_type: "autonomous_probe",
+          purchase_type: "corporation",
+        });
+        corpShipId = (purchaseResult as Record<string, unknown>).ship_id as string;
+
+        // Relocate the corp ship to sector 3 (non-fedspace) and give it
+        // fighters so it can deploy a garrison.
+        await setShipSector(corpShipId, 3);
+        await setShipFighters(corpShipId, 200);
+
+        // Deploy offensive garrison as the corp ship (pseudo-character).
+        await apiOk("combat_leave_fighters", {
+          character_id: corpShipId,
+          actor_character_id: p1Id,
+          sector: 3,
+          quantity: 80,
+          mode: "offensive",
+        });
+      },
+    );
+
+    let cursorP2: number;
+
+    await t.step("P2 enters sector 3 where the corp garrison lives", async () => {
+      cursorP2 = await getEventCursor(p2Id);
+      // Move P2's personal ship into sector 3 where the corp garrison lives.
+      // `move` actually exercises `checkGarrisonAutoEngage`; setShipSector
+      // alone just updates the DB.
+      await apiOk("move", {
+        character_id: p2Id,
+        to_sector: 3,
+      });
+    });
+
+    await t.step(
+      "P2 does NOT receive combat.round_waiting (corp ship is friendly)",
+      async () => {
+        await assertNoEventsOfType(
+          p2Id,
+          "combat.round_waiting",
+          cursorP2,
+        );
+      },
+    );
+
+    await t.step("DB: no combat row for sector 3", async () => {
+      const combat = await queryCombatState(3);
+      assertEquals(
+        combat,
+        null,
+        "Combat should not be initiated against a corpmate garrison",
+      );
+    });
+  },
+});
+
+// ============================================================================
+// Group 59: Corp-ship garrison metadata carries owner_corporation_id
+// ============================================================================
+//
+// Inside an active encounter, `buildGarrisonActions` → `selectStrongestTarget`
+// must filter out corpmates. That filter reads `metadata.owner_corporation_id`
+// on the garrison participant; before the fix this came back null for
+// corp-ship garrisons.
+
+Deno.test({
+  name: "combat — corp-ship garrison participant carries corp_id metadata",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    let corpId: string;
+    let inviteCode: string;
+    let corpShipId: string;
+
+    await t.step(
+      "P1 founds corp, buys corp ship in sector 3, P2 joins, P3 stays out",
+      async () => {
+        await resetDatabase([P1, P2, P3]);
+        await apiOk("join", { character_id: p1Id });
+        await apiOk("join", { character_id: p2Id });
+        await apiOk("join", { character_id: p3Id });
+        await setShipCredits(p1ShipId, 100_000);
+        await setShipSector(p1ShipId, 0);
+
+        const createResult = await apiOk("corporation_create", {
+          character_id: p1Id,
+          name: "Target Filter Corp",
+        });
+        corpId = (createResult as Record<string, unknown>).corp_id as string;
+        inviteCode = (createResult as Record<string, unknown>)
+          .invite_code as string;
+
+        await setMegabankBalance(p1Id, 100_000);
+        const purchaseResult = await apiOk("ship_purchase", {
+          character_id: p1Id,
+          ship_type: "autonomous_probe",
+          purchase_type: "corporation",
+        });
+        corpShipId = (purchaseResult as Record<string, unknown>).ship_id as string;
+
+        await setShipSector(corpShipId, 3);
+        await setShipFighters(corpShipId, 200);
+        await apiOk("combat_leave_fighters", {
+          character_id: corpShipId,
+          actor_character_id: p1Id,
+          sector: 3,
+          quantity: 80,
+          mode: "offensive",
+        });
+
+        await apiOk("corporation_join", {
+          character_id: p2Id,
+          corp_id: corpId,
+          invite_code: inviteCode,
+        });
+
+        // P3 (non-corpmate) joins the sector so there's a valid hostile
+        // target for the garrison — otherwise combat_initiate refuses.
+        await setShipSector(p3ShipId, 3);
+        await setShipFighters(p3ShipId, 300);
+      },
+    );
+
+    await t.step("P3 initiates combat against the corp ship", async () => {
+      await apiOk("combat_initiate", {
+        character_id: p3Id,
+        target_id: corpShipId,
+      });
+    });
+
+    await t.step(
+      "Corp-ship garrison participant has owner_corporation_id set",
+      async () => {
+        const combat = await queryCombatState(3);
+        assertExists(combat, "Combat should be active in sector 3");
+        const participants = (combat as Record<string, unknown>)
+          .participants as Record<string, unknown>;
+        const garrisonId = `garrison:3:${corpShipId}`;
+        assertExists(
+          participants[garrisonId],
+          "Corp-ship garrison should be a participant",
+        );
+        const garrison = participants[garrisonId] as Record<string, unknown>;
+        const meta = (garrison.metadata ?? {}) as Record<string, unknown>;
+        assertEquals(
+          meta.owner_corporation_id,
+          corpId,
+          "Corp-ship garrison metadata must expose owner_corporation_id",
+        );
+      },
+    );
+  },
+});
+
+// ============================================================================
+// Group 60: combat_action rejects attacks against corpmate player ships
+// ============================================================================
+//
+// Before the fix `combat_action` only validated garrison targets. A player
+// in an encounter with their corpmate could commit attack fighters against
+// them with no server-side objection.
+
+Deno.test({
+  name: "combat — combat_action rejects corpmate ship target",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    let corpId: string;
+    let inviteCode: string;
+
+    await t.step(
+      "P1 + P2 both in Corp X; all three ships in sector 3",
+      async () => {
+        await resetDatabase([P1, P2, P3]);
+        await apiOk("join", { character_id: p1Id });
+        await apiOk("join", { character_id: p2Id });
+        await apiOk("join", { character_id: p3Id });
+        await setShipCredits(p1ShipId, 50_000);
+
+        const createResult = await apiOk("corporation_create", {
+          character_id: p1Id,
+          name: "No Friendly Fire Corp",
+        });
+        corpId = (createResult as Record<string, unknown>).corp_id as string;
+        inviteCode = (createResult as Record<string, unknown>)
+          .invite_code as string;
+        await apiOk("corporation_join", {
+          character_id: p2Id,
+          corp_id: corpId,
+          invite_code: inviteCode,
+        });
+
+        await setShipSector(p1ShipId, 3);
+        await setShipFighters(p1ShipId, 200);
+        await setShipSector(p2ShipId, 3);
+        await setShipFighters(p2ShipId, 200);
+        await setShipSector(p3ShipId, 3);
+        await setShipFighters(p3ShipId, 200);
+      },
+    );
+
+    let combatId: string;
+
+    await t.step("P3 initiates combat against P1 (drags in P2)", async () => {
+      const result = await apiOk("combat_initiate", {
+        character_id: p3Id,
+        target_id: p1Id,
+      });
+      combatId = (result as Record<string, unknown>).combat_id as string;
+      assertExists(combatId);
+
+      // Sanity: P2 is a participant by virtue of being in the same sector.
+      const combat = await queryCombatState(3);
+      const participants = (combat as Record<string, unknown>)
+        .participants as Record<string, unknown>;
+      assertExists(participants[p2Id], "P2 should be pulled into combat");
+    });
+
+    await t.step("P1 cannot target corpmate P2 via combat_action", async () => {
+      const result = await api("combat_action", {
+        character_id: p1Id,
+        combat_id: combatId,
+        action: "attack",
+        target_id: p2Id,
+        commit: 50,
+      });
+      assertEquals(result.status, 400, "Expected 400, got " + result.status);
+      const error = String(result.body.error ?? "").toLowerCase();
+      assert(
+        error.includes("corporation") || error.includes("own"),
+        `Expected friendly-fire rejection, got: ${result.body.error}`,
+      );
+    });
+
+    await t.step("P1 CAN target P3 (non-corpmate)", async () => {
+      const result = await apiOk("combat_action", {
+        character_id: p1Id,
+        combat_id: combatId,
+        action: "attack",
+        target_id: p3Id,
+        commit: 50,
+      });
+      assert(result.success);
     });
   },
 });

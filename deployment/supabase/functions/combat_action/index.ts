@@ -36,6 +36,10 @@ import {
 } from "../_shared/combat_types.ts";
 import { getAdjacentSectors } from "../_shared/map.ts";
 import {
+  areFriendlyFromMeta,
+  buildCorporationMap,
+} from "../_shared/friendly.ts";
+import {
   computeNextCombatDeadline,
   resolveEncounterRound,
 } from "../_shared/combat_resolution.ts";
@@ -443,36 +447,32 @@ async function buildActionState(params: {
       actorCombatantId: participant.combatant_id,
       targetIdRaw: targetId,
     });
-    // Prevent friendly fire against own garrison or corpmate garrison
+    // Prevent friendly fire. Applies to BOTH garrison and character
+    // targets: own ship, own garrison, corpmate ship, corpmate garrison,
+    // and corp-owned ships are all off-limits. Uses the shared in-memory
+    // CorporationMap so the rules are identical to what selectStrongestTarget
+    // uses for garrison auto-targeting.
     const targetParticipant = encounter.participants[targetId];
-    if (targetParticipant?.combatant_type === "garrison") {
+    if (targetParticipant) {
       const actorOwnerId =
         participant.owner_character_id ?? participant.combatant_id;
-      const garrisonOwnerId = targetParticipant.owner_character_id;
-      if (garrisonOwnerId && garrisonOwnerId === actorOwnerId) {
+      const targetOwnerId =
+        targetParticipant.owner_character_id ?? targetParticipant.combatant_id;
+      if (targetOwnerId === actorOwnerId) {
         const err = new Error(
-          "Cannot attack your own garrison",
+          targetParticipant.combatant_type === "garrison"
+            ? "Cannot attack your own garrison"
+            : "Cannot attack your own ship",
         ) as Error & { status?: number };
         err.status = 400;
         throw err;
       }
-      // Check corporation membership
-      const actorMeta = (participant.metadata ?? {}) as Record<string, unknown>;
-      const garrisonMeta = (targetParticipant.metadata ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const actorCorpId =
-        typeof actorMeta.corporation_id === "string"
-          ? actorMeta.corporation_id
-          : null;
-      const garrisonCorpId =
-        typeof garrisonMeta.owner_corporation_id === "string"
-          ? garrisonMeta.owner_corporation_id
-          : null;
-      if (actorCorpId && garrisonCorpId && actorCorpId === garrisonCorpId) {
+      const corpMap = buildCorporationMap(encounter);
+      if (areFriendlyFromMeta(corpMap, participant, targetParticipant)) {
         const err = new Error(
-          "Cannot attack a garrison owned by your corporation",
+          targetParticipant.combatant_type === "garrison"
+            ? "Cannot attack a garrison owned by your corporation"
+            : "Cannot attack a ship belonging to your corporation",
         ) as Error & { status?: number };
         err.status = 400;
         throw err;
