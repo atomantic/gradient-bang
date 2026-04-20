@@ -327,10 +327,13 @@ Deno.test({
       assert(result.body.error?.includes("not in your corporation"));
     });
 
-    await t.step("happy path: P1 kicks P2", async () => {
+    await t.step("happy path: P1 kicks P2 (confirmed)", async () => {
+      // corporation_kick is a two-step confirm flow; tests bypass the
+      // client-side modal by passing confirm=true directly.
       const result = await apiOk("corporation_kick", {
         character_id: p1Id,
         target_id: p2Id,
+        confirm: true,
       });
       assertExists(result);
     });

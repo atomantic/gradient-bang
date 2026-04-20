@@ -86,8 +86,6 @@ NO_TOOL_WATCHDOG_DELAY = 5.0
 # Tools restricted to player ships only (corp ships cannot use these).
 PLAYER_ONLY_TOOLS = frozenset(
     {
-        "join_corporation",
-        "kick_corporation_member",
         "sell_ship",
         "bank_withdraw",
     }
@@ -115,8 +113,6 @@ ASYNC_TOOL_COMPLETIONS = {
     "bank_withdraw": "bank.transaction",
     "transfer_credits": "credits.transfer",
     "dump_cargo": "salvage.created",
-    "join_corporation": "corporation.member_joined",
-    "kick_corporation_member": "corporation.member_kicked",
     "combat_initiate": "combat.round_waiting",
     "combat_action": "combat.action_accepted",
 }
@@ -1480,26 +1476,6 @@ class TaskAgent(LLMAgent):
 
     # ── Special-case tool handlers ─────────────────────────────────────
 
-    async def _tool_join_corporation(self, args: dict) -> Any:
-        corp_id = (args.get("corp_id") or "").strip()
-        if not corp_id:
-            corp_name = args.get("corp_name")
-            if not corp_name:
-                raise ValueError("join_corporation requires either corp_id or corp_name.")
-            corps = await self._game_client.list_corporations()
-            match_name = corp_name.strip().lower()
-            for corp in corps:
-                if str(corp.get("name", "")).strip().lower() == match_name:
-                    corp_id = corp.get("corp_id", "")
-                    break
-            if not corp_id:
-                raise ValueError(f"Corporation named '{corp_name}' not found.")
-        return await self._game_client.join_corporation(
-            corp_id=corp_id,
-            invite_code=args["invite_code"],
-            character_id=self._character_id,
-        )
-
     async def _tool_corporation_info(self, args: dict) -> Any:
         if args.get("list_all"):
             result = await self._game_client._request("corporation.list", {})
@@ -1549,7 +1525,6 @@ class TaskAgent(LLMAgent):
 
 # Tools with custom handler methods (not dispatched via schema)
 _SPECIAL_HANDLERS: Dict[str, str] = {
-    "join_corporation": "_tool_join_corporation",
     "corporation_info": "_tool_corporation_info",
     "ship_definitions": "_tool_ship_definitions",
     "sell_ship": "_tool_sell_ship",

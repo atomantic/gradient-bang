@@ -1329,13 +1329,21 @@ class AsyncGameClient:
         corp_id: str,
         invite_code: str,
         character_id: Optional[str] = None,
+        confirm: bool = False,
     ) -> Dict[str, Any]:
-        """Join an existing corporation using an invite code."""
+        """Join an existing corporation.
+
+        The ``confirm`` flag is only used when switching corps triggers a
+        pending disband of the old corp. It is set exclusively by the bot's
+        client_message_handler after the user approves the modal — never by
+        the voice LLM. invite_code may be an empty string for a founder
+        rejoining their own corporation.
+        """
 
         if not isinstance(corp_id, str) or not corp_id.strip():
             raise ValueError("corp_id must be a non-empty string")
-        if not isinstance(invite_code, str) or not invite_code.strip():
-            raise ValueError("invite_code must be a non-empty string")
+        if not isinstance(invite_code, str):
+            raise ValueError("invite_code must be a string")
 
         if character_id is None:
             character_id = self._character_id
@@ -1350,6 +1358,8 @@ class AsyncGameClient:
             "corp_id": corp_id,
             "invite_code": invite_code,
         }
+        if confirm:
+            payload["confirm"] = True
         return await self._request("corporation.join", payload)
 
     async def leave_corporation(
@@ -1375,8 +1385,14 @@ class AsyncGameClient:
         *,
         target_id: str,
         character_id: Optional[str] = None,
+        confirm: bool = False,
     ) -> Dict[str, Any]:
-        """Remove another member from the corporation."""
+        """Remove another member from the corporation.
+
+        The ``confirm`` flag drives the two-step confirmation flow. It is set
+        exclusively by the bot's client_message_handler after the user
+        approves the modal — never by the voice LLM.
+        """
 
         if not isinstance(target_id, str) or not target_id.strip():
             raise ValueError("target_id must be a non-empty string")
@@ -1393,6 +1409,8 @@ class AsyncGameClient:
             "character_id": character_id,
             "target_id": target_id,
         }
+        if confirm:
+            payload["confirm"] = True
         return await self._request("corporation.kick", payload)
 
     async def rename_corporation(

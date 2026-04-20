@@ -19,8 +19,9 @@ import {
 import { loadCharacter } from "../_shared/status.ts";
 import {
   emitCorporationEvent,
-  generateInviteCode,
+  generateUniqueInviteCode,
   isActiveCorporationMember,
+  loadCorporationById,
 } from "../_shared/corporations.ts";
 import { traced } from "../_shared/weave.ts";
 
@@ -129,7 +130,15 @@ async function handleRegenerate(params: {
     );
   }
 
-  const newCode = generateInviteCode();
+  const corporation = await loadCorporationById(supabase, corpId);
+  if (corporation.founder_id !== characterId) {
+    throw new CorporationInviteError(
+      "Only the corporation founder can regenerate the invite code",
+      403,
+    );
+  }
+
+  const newCode = await generateUniqueInviteCode(supabase);
   const timestamp = new Date().toISOString();
   const { data, error } = await supabase
     .from("corporations")

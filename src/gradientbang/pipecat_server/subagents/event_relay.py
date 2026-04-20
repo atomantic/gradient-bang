@@ -389,6 +389,14 @@ EVENT_CONFIGS: dict[str, EventConfig] = {
     "corporation.member_kicked": EventConfig(corp_scope_if_own_action=True),
     "corporation.disbanded": EventConfig(corp_scope_if_own_action=True),
     "corporation.data": EventConfig(corp_scope_if_own_action=True),
+    # Pending confirmation events: client-only. The client opens a
+    # confirmation modal; the bot's client_message_handler drives the
+    # follow-up confirm/cancel and injects its own <event> context for
+    # the voice agent. Leaking the raw pending event into LLM context
+    # would cause duplicate narration ("you're about to remove Bob...")
+    # before the confirm fires.
+    "corporation.kick_pending": EventConfig(append=AppendRule.NEVER),
+    "corporation.join_pending": EventConfig(append=AppendRule.NEVER),
     # Audited legacy overrides:
     # - event.query needs a shared bounded task/bus summary plus a shorter voice summary
     # - chat.message, ships.list, and combat overrides remain voice-only; generic client summaries

@@ -132,7 +132,13 @@ async function loadMyCorporation(params: {
     supabase,
     character.corporation_id,
   );
-  const payload = buildCorporationMemberPayload(corporation, members, ships, destroyedShips);
+  const payload = buildCorporationMemberPayload(
+    corporation,
+    members,
+    ships,
+    destroyedShips,
+    characterId,
+  );
   payload.joined_at = character.corporation_joined_at;
   return { corporation: payload };
 }

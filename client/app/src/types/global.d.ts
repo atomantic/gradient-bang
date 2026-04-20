@@ -270,6 +270,29 @@ declare global {
     | "ship_details"
     | "intro_tutorial"
     | "social_replay"
+    | "confirm_kick"
+    | "confirm_join"
+
+  // Data payloads for corp-confirmation modals. Stored on
+  // `activeModal.data` when GameContext handles the pending event and
+  // read back by the dialog component. The confirm-* client messages
+  // echo the relevant fields back to the bot, which forwards to the
+  // edge function with confirm: true.
+  interface ConfirmKickData {
+    target_id: string
+    target_name: string
+    corp_id: string
+    corp_name: string
+  }
+
+  interface ConfirmJoinData {
+    corp_id: string
+    corp_name: string
+    invite_code: string
+    old_corp_id: string
+    old_corp_name: string
+    will_disband: boolean
+  }
 
   // --- COMBAT
 

@@ -51,6 +51,7 @@ from gradientbang.subagents.bus import (
     BusTaskUpdateMessage,
 )
 from gradientbang.tools import VOICE_TOOLS
+from gradientbang.utils.formatting import looks_like_uuid
 from gradientbang.utils.llm_factory import create_llm_service, get_voice_llm_config
 from gradientbang.utils.supabase_client import AsyncGameClient
 from gradientbang.utils.weave_tracing import traced
@@ -331,7 +332,9 @@ class VoiceAgent(LLMAgent):
             "sell_ship": self._handle_sell_ship,
             "rename_corporation": self._handle_rename_corporation,
             "create_corporation": self._handle_create_corporation,
+            "join_corporation": self._handle_join_corporation,
             "leave_corporation": self._handle_leave_corporation,
+            "kick_corporation_member": self._handle_kick_corporation_member,
             "send_message": self._handle_send_message,
             "combat_initiate": self._handle_combat_initiate,
             "combat_action": self._handle_combat_action,
@@ -633,6 +636,190 @@ class VoiceAgent(LLMAgent):
             )
         except Exception as exc:
             await self._finish_event_tool_with_error(params, exc, run_llm=True)
+
+    async def _handle_join_corporation(self, params: FunctionCallParams):
+        # Voice-only tool. The LLM supplies corp_name + invite_code; we
+        # resolve corp_name → corp_id here (LLM has no way to know corp_ids).
+        # The `confirm` flag is NOT in the tool schema and is NEVER set
+        # here — only client_message_handler.confirm-join passes it.
+        args = params.arguments
+        corp_name = (args.get("corp_name") or "").strip()
+        corp_id = (args.get("corp_id") or "").strip()
+        invite_code = (args.get("invite_code") or "").strip()
+
+        # Pre-flight: refuse to call the server if the LLM skipped a
+        # required field (schema requires both, but an empty string would
+        # still pass JSON schema validation). Surface the error back to the
+        # LLM so it can ask the user.
+        if not invite_code:
+            await params.result_callback(
+                {
+                    "error": (
+                        "invite_code is required. Ask the player for the "
+                        "invite passphrase before calling this tool."
+                    )
+                },
+                properties=FunctionCallResultProperties(run_llm=True),
+            )
+            return
+        if not corp_id and not corp_name:
+            await params.result_callback(
+                {
+                    "error": (
+                        "corp_name or corp_id is required. Ask the player "
+                        "which corporation they want to join."
+                    )
+                },
+                properties=FunctionCallResultProperties(run_llm=True),
+            )
+            return
+
+        # Resolve corp_name → corp_id.
+        if not corp_id:
+            try:
+                corps = await self._game_client.list_corporations()
+            except Exception as exc:
+                await self._finish_event_tool_with_error(params, exc, run_llm=True)
+                return
+            match_name = corp_name.lower()
+            for corp in corps:
+                if str(corp.get("name", "")).strip().lower() == match_name:
+                    corp_id = str(corp.get("corp_id", "")).strip()
+                    break
+            if not corp_id:
+                await params.result_callback(
+                    {
+                        "error": (
+                            f"No corporation named '{corp_name}' exists. "
+                            "Ask the player to verify the name."
+                        )
+                    },
+                    properties=FunctionCallResultProperties(run_llm=True),
+                )
+                return
+
+        try:
+            result = await self._game_client.join_corporation(
+                corp_id=corp_id,
+                invite_code=invite_code,
+                character_id=self._character_id,
+            )
+            self._track_request_id_from_result(result)
+        except Exception as exc:
+            await self._finish_event_tool_with_error(params, exc, run_llm=True)
+            return
+
+        # Pending response means the server emitted corporation.join_pending
+        # and the client will open a confirmation modal. Do NOT run the LLM
+        # now — the confirm/cancel client message will drive the next step
+        # and inject context from client_message_handler.
+        if isinstance(result, dict) and result.get("pending"):
+            await params.result_callback(
+                {
+                    "status": "pending_confirmation",
+                    "will_disband": bool(result.get("will_disband")),
+                    "old_corp_name": result.get("old_corp_name"),
+                    "new_corp_name": result.get("corp_name"),
+                },
+                properties=FunctionCallResultProperties(run_llm=False),
+            )
+            return
+
+        # Joined in a single round-trip (no pending). Narrate normally.
+        self._begin_assistant_response_cycle()
+        await params.result_callback(
+            {"success": True, "corp_name": result.get("name") if isinstance(result, dict) else None},
+            properties=FunctionCallResultProperties(run_llm=True),
+        )
+
+    async def _handle_kick_corporation_member(self, params: FunctionCallParams):
+        # Voice-only tool. The kick ALWAYS opens a confirmation modal —
+        # the first call (without `confirm`) returns pending and emits
+        # corporation.kick_pending; client_message_handler.confirm-kick
+        # performs the actual kick. The LLM never sets `confirm`.
+        args = params.arguments
+        target_id = (args.get("target_id") or "").strip()
+        if not target_id:
+            await params.result_callback(
+                {
+                    "error": (
+                        "target_id is required. Ask the player to identify "
+                        "which member to remove."
+                    )
+                },
+                properties=FunctionCallResultProperties(run_llm=True),
+            )
+            return
+
+        # LLMs see corporation member *names* via summarize_corporation_info,
+        # not character_ids. If target_id doesn't already look like a UUID,
+        # resolve it against the current corporation's member list — the
+        # edge function's canonicalizeCharacterId() would otherwise v5-hash
+        # a display name into a UUID that doesn't match any real character.
+        if not looks_like_uuid(target_id):
+            try:
+                my_corp = await self._game_client._request(
+                    "my_corporation", {"character_id": self._character_id}
+                )
+            except Exception as exc:
+                await self._finish_event_tool_with_error(params, exc, run_llm=True)
+                return
+            corp = (
+                my_corp.get("corporation") if isinstance(my_corp, dict) else None
+            )
+            members = (
+                corp.get("members") if isinstance(corp, dict) else None
+            ) or []
+            lowered = target_id.lower()
+            resolved: Optional[str] = None
+            for member in members:
+                if not isinstance(member, dict):
+                    continue
+                name = str(member.get("name") or "").strip()
+                if name and name.lower() == lowered:
+                    resolved = str(member.get("character_id") or "").strip() or None
+                    break
+            if not resolved:
+                await params.result_callback(
+                    {
+                        "error": (
+                            f"No member named '{target_id}' in your corporation. "
+                            "Ask the player to confirm the name."
+                        )
+                    },
+                    properties=FunctionCallResultProperties(run_llm=True),
+                )
+                return
+            target_id = resolved
+
+        try:
+            result = await self._game_client.kick_corporation_member(
+                target_id=target_id,
+                character_id=self._character_id,
+            )
+            self._track_request_id_from_result(result)
+        except Exception as exc:
+            await self._finish_event_tool_with_error(params, exc, run_llm=True)
+            return
+
+        if isinstance(result, dict) and result.get("pending"):
+            await params.result_callback(
+                {
+                    "status": "pending_confirmation",
+                    "target_name": result.get("target_name"),
+                },
+                properties=FunctionCallResultProperties(run_llm=False),
+            )
+            return
+
+        # Unexpected — kick without confirm should always return pending
+        # from the edge function. Fall through to a normal response so the
+        # LLM at least acknowledges completion.
+        self._begin_assistant_response_cycle()
+        await params.result_callback(
+            {"success": True},
+            properties=FunctionCallResultProperties(run_llm=True),
+        )
 
     # ── Fire-and-forget tools ──────────────────────────────────────────
 

@@ -251,10 +251,12 @@ Deno.test({
       cursorP3 = await getEventCursor(p3Id);
     });
 
-    await t.step("P1 kicks P2", async () => {
+    await t.step("P1 kicks P2 (confirmed)", async () => {
+      // confirm=true skips the two-step confirm flow (which is UI-driven).
       const result = await apiOk("corporation_kick", {
         character_id: p1Id,
         target_id: p2Id,
+        confirm: true,
       });
       assert(result.success);
     });
@@ -452,13 +454,14 @@ Deno.test({
 // ============================================================================
 
 Deno.test({
-  name: "corporation — info (member vs non-member view)",
+  name: "corporation — info (founder, non-founder member, non-member)",
   sanitizeOps: false,
   sanitizeResources: false,
   async fn(t) {
     let corpId: string;
+    let inviteCode: string;
 
-    await t.step("reset and create corp with P1", async () => {
+    await t.step("reset and create corp with P1 (founder) + P2 (joiner)", async () => {
       await resetDatabase([P1, P2, P3]);
       await apiOk("join", { character_id: p1Id });
       await apiOk("join", { character_id: p2Id });
@@ -469,17 +472,40 @@ Deno.test({
         name: "Test Corp Info",
       });
       corpId = (result as Record<string, unknown>).corp_id as string;
+      inviteCode = (result as Record<string, unknown>).invite_code as string;
+      await apiOk("corporation_join", {
+        character_id: p2Id,
+        corp_id: corpId,
+        invite_code: inviteCode,
+      });
     });
 
-    await t.step("member (P1) sees detailed info", async () => {
+    await t.step("founder (P1) sees invite_code + is_founder:true", async () => {
       const result = await apiOk("corporation_info", {
         character_id: p1Id,
         corp_id: corpId,
       });
       assert(result.success);
       const body = result as Record<string, unknown>;
-      assertExists(body.invite_code, "Member should see invite_code");
-      assertExists(body.members, "Member should see members list");
+      assertExists(body.invite_code, "Founder should see invite_code");
+      assertEquals(body.is_founder, true, "Founder should have is_founder:true");
+      assertExists(body.members, "Member payload should include members list");
+    });
+
+    await t.step("non-founder member (P2) sees is_founder:false, NO invite_code", async () => {
+      const result = await apiOk("corporation_info", {
+        character_id: p2Id,
+        corp_id: corpId,
+      });
+      assert(result.success);
+      const body = result as Record<string, unknown>;
+      assertEquals(body.is_founder, false, "Non-founder member should have is_founder:false");
+      assertEquals(
+        body.invite_code,
+        undefined,
+        "Non-founder member should NOT see invite_code",
+      );
+      assertExists(body.members, "Non-founder member still sees members list");
     });
 
     await t.step("non-member (P3) sees public info only", async () => {
@@ -491,8 +517,16 @@ Deno.test({
       const body = result as Record<string, unknown>;
       assertEquals(body.name, "Test Corp Info");
       assertExists(body.member_count, "Non-member should see member_count");
-      // Non-member should NOT see invite_code
-      assertEquals(body.invite_code, undefined, "Non-member should not see invite_code");
+      assertEquals(
+        body.invite_code,
+        undefined,
+        "Non-member should not see invite_code",
+      );
+      assertEquals(
+        body.is_founder,
+        undefined,
+        "Non-member public payload has no is_founder flag",
+      );
     });
   },
 });
@@ -660,14 +694,15 @@ Deno.test({
 });
 
 // ============================================================================
-// Group 13: corporation_join — already in a corporation
+// Group 13: corporation_join — switch corps via pending-confirm (last member)
 // ============================================================================
 
 Deno.test({
-  name: "corporation — join already in corp",
+  name: "corporation — join triggers pending when last member of old corp",
   sanitizeOps: false,
   sanitizeResources: false,
   async fn(t) {
+    let corpId1: string;
     let corpId2: string;
     let inviteCode2: string;
 
@@ -679,13 +714,14 @@ Deno.test({
       const p2ShipId = await shipIdFor(P2);
       await setShipCredits(p2ShipId, 50000);
 
-      // P1 creates corp 1
-      await apiOk("corporation_create", {
+      // P1 is last (and only) member of corp 1.
+      const result1 = await apiOk("corporation_create", {
         character_id: p1Id,
         name: "Corp One",
       });
+      corpId1 = (result1 as Record<string, unknown>).corp_id as string;
 
-      // P2 creates corp 2
+      // P2 creates corp 2.
       const result2 = await apiOk("corporation_create", {
         character_id: p2Id,
         name: "Corp Two",
@@ -694,14 +730,72 @@ Deno.test({
       inviteCode2 = (result2 as Record<string, unknown>).invite_code as string;
     });
 
-    await t.step("fails: P1 already in a corporation", async () => {
-      const result = await api("corporation_join", {
+    let cursorP1: number;
+
+    await t.step("capture P1 cursor before pending join", async () => {
+      cursorP1 = await getEventCursor(p1Id);
+    });
+
+    await t.step("P1 joins corp 2 without confirm → pending, no state change", async () => {
+      const result = await apiOk("corporation_join", {
         character_id: p1Id,
         corp_id: corpId2,
         invite_code: inviteCode2,
       });
-      assertEquals(result.status, 400);
-      assert(result.body.error?.includes("Already in a corporation"));
+      const body = result as Record<string, unknown>;
+      assertEquals(body.pending, true, "Response should be pending");
+      assertEquals(body.will_disband, true, "Response should flag will_disband");
+      assertEquals(body.old_corp_id, corpId1);
+    });
+
+    await t.step("P1 receives corporation.join_pending (character-scoped)", async () => {
+      const events = await eventsOfType(
+        p1Id,
+        "corporation.join_pending",
+        cursorP1,
+      );
+      assert(
+        events.length >= 1,
+        `Expected >= 1 corporation.join_pending, got ${events.length}`,
+      );
+      const payload = events[0].payload;
+      assertEquals(payload.corp_id, corpId2);
+      assertEquals(payload.old_corp_id, corpId1);
+      assertEquals(payload.will_disband, true);
+    });
+
+    await t.step("DB: P1 still in corp 1 (no mutation without confirm)", async () => {
+      const char = await queryCharacter(p1Id);
+      assertExists(char);
+      assertEquals(char.corporation_id, corpId1);
+    });
+
+    await t.step("P1 confirms → old corp disbands, join succeeds", async () => {
+      const result = await apiOk("corporation_join", {
+        character_id: p1Id,
+        corp_id: corpId2,
+        invite_code: inviteCode2,
+        confirm: true,
+      });
+      const body = result as Record<string, unknown>;
+      assertEquals(body.corp_id, corpId2);
+    });
+
+    await t.step("P1 receives corporation.disbanded for old corp", async () => {
+      const events = await eventsOfType(
+        p1Id,
+        "corporation.disbanded",
+        cursorP1,
+      );
+      assert(events.length >= 1, "Expected corporation.disbanded after confirm");
+      assertEquals(events[0].payload.corp_id, corpId1);
+      assertEquals(events[0].payload.reason, "last_member_joined_other");
+    });
+
+    await t.step("DB: P1 now in corp 2", async () => {
+      const char = await queryCharacter(p1Id);
+      assertExists(char);
+      assertEquals(char.corporation_id, corpId2);
     });
   },
 });
@@ -1365,6 +1459,462 @@ Deno.test({
         result.body.error?.includes("already exists"),
         `Expected duplicate name error, got: ${result.body.error}`,
       );
+    });
+  },
+});
+
+// ============================================================================
+// Group 32: corporation — invite code is a two-word passphrase
+// ============================================================================
+
+Deno.test({
+  name: "corporation — invite code is a two-word passphrase",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    await t.step("reset and create corp", async () => {
+      await resetDatabase([P1]);
+      await apiOk("join", { character_id: p1Id });
+      await setShipCredits(p1ShipId, 50000);
+    });
+
+    await t.step("invite_code has the word-word shape", async () => {
+      const result = await apiOk("corporation_create", {
+        character_id: p1Id,
+        name: "Passphrase Corp",
+      });
+      const code = (result as Record<string, unknown>).invite_code as string;
+      assertExists(code, "Response should include invite_code");
+      assert(
+        /^[a-z]+-[a-z]+$/.test(code),
+        `Expected word-word passphrase, got: ${code}`,
+      );
+    });
+  },
+});
+
+// ============================================================================
+// Group 33: corporation_kick — founder-only authorization
+// ============================================================================
+
+Deno.test({
+  name: "corporation — kick rejected for non-founder member",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    let corpId: string;
+    let inviteCode: string;
+
+    await t.step("reset and create corp with founder P1 + members P2 + P3", async () => {
+      await resetDatabase([P1, P2, P3]);
+      await apiOk("join", { character_id: p1Id });
+      await apiOk("join", { character_id: p2Id });
+      await apiOk("join", { character_id: p3Id });
+      await setShipCredits(p1ShipId, 50000);
+      const result = await apiOk("corporation_create", {
+        character_id: p1Id,
+        name: "Founder Kick Corp",
+      });
+      corpId = (result as Record<string, unknown>).corp_id as string;
+      inviteCode = (result as Record<string, unknown>).invite_code as string;
+      await apiOk("corporation_join", {
+        character_id: p2Id,
+        corp_id: corpId,
+        invite_code: inviteCode,
+      });
+      await apiOk("corporation_join", {
+        character_id: p3Id,
+        corp_id: corpId,
+        invite_code: inviteCode,
+      });
+    });
+
+    await t.step("non-founder P2 cannot kick P3", async () => {
+      const result = await api("corporation_kick", {
+        character_id: p2Id,
+        target_id: p3Id,
+      });
+      assertEquals(result.status, 403);
+      assert(
+        (result.body.error as string | undefined)?.toLowerCase().includes("founder"),
+        `Expected founder-only error, got: ${result.body.error}`,
+      );
+    });
+
+    await t.step("DB: P3 still in corporation", async () => {
+      const char = await queryCharacter(p3Id);
+      assertExists(char);
+      assertEquals(char.corporation_id, corpId);
+    });
+  },
+});
+
+// ============================================================================
+// Group 34: corporation_kick — pending flow (two-step confirm)
+// ============================================================================
+
+Deno.test({
+  name: "corporation — kick without confirm emits pending event, no mutation",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    let corpId: string;
+
+    await t.step("reset and create corp with founder P1 + member P2 + bystander P3", async () => {
+      await resetDatabase([P1, P2, P3]);
+      await apiOk("join", { character_id: p1Id });
+      await apiOk("join", { character_id: p2Id });
+      await apiOk("join", { character_id: p3Id });
+      await setShipCredits(p1ShipId, 50000);
+      const result = await apiOk("corporation_create", {
+        character_id: p1Id,
+        name: "Kick Pending Corp",
+      });
+      corpId = (result as Record<string, unknown>).corp_id as string;
+      const inviteCode = (result as Record<string, unknown>).invite_code as string;
+      await apiOk("corporation_join", {
+        character_id: p2Id,
+        corp_id: corpId,
+        invite_code: inviteCode,
+      });
+    });
+
+    let cursorP1: number;
+    let cursorP2: number;
+    let cursorP3: number;
+
+    await t.step("capture cursors", async () => {
+      cursorP1 = await getEventCursor(p1Id);
+      cursorP2 = await getEventCursor(p2Id);
+      cursorP3 = await getEventCursor(p3Id);
+    });
+
+    await t.step("P1 kicks P2 WITHOUT confirm → pending", async () => {
+      const result = await apiOk("corporation_kick", {
+        character_id: p1Id,
+        target_id: p2Id,
+      });
+      const body = result as Record<string, unknown>;
+      assertEquals(body.pending, true);
+      assertExists(body.target_name, "Response includes target display name");
+    });
+
+    await t.step("P1 (kicker) receives corporation.kick_pending", async () => {
+      const events = await eventsOfType(
+        p1Id,
+        "corporation.kick_pending",
+        cursorP1,
+      );
+      assert(events.length >= 1, "Kicker should receive kick_pending");
+    });
+
+    await t.step("P2 (target) does NOT receive corporation.kick_pending", async () => {
+      await assertNoEventsOfType(p2Id, "corporation.kick_pending", cursorP2);
+    });
+
+    await t.step("P3 (bystander) does NOT receive corporation.kick_pending", async () => {
+      await assertNoEventsOfType(p3Id, "corporation.kick_pending", cursorP3);
+    });
+
+    await t.step("DB: P2 still in corporation (no confirm yet)", async () => {
+      const char = await queryCharacter(p2Id);
+      assertExists(char);
+      assertEquals(char.corporation_id, corpId);
+    });
+
+    await t.step("P1 confirms → P2 is removed", async () => {
+      await apiOk("corporation_kick", {
+        character_id: p1Id,
+        target_id: p2Id,
+        confirm: true,
+      });
+      const char = await queryCharacter(p2Id);
+      assertExists(char);
+      assertEquals(char.corporation_id, null);
+    });
+  },
+});
+
+// ============================================================================
+// Group 35: corporation_regenerate_invite_code — founder-only
+// ============================================================================
+
+Deno.test({
+  name: "corporation — regen invite code rejected for non-founder",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    let corpId: string;
+
+    await t.step("reset and create corp with founder P1 + member P2", async () => {
+      await resetDatabase([P1, P2]);
+      await apiOk("join", { character_id: p1Id });
+      await apiOk("join", { character_id: p2Id });
+      await setShipCredits(p1ShipId, 50000);
+      const result = await apiOk("corporation_create", {
+        character_id: p1Id,
+        name: "Regen Founder Corp",
+      });
+      corpId = (result as Record<string, unknown>).corp_id as string;
+      const inviteCode = (result as Record<string, unknown>).invite_code as string;
+      await apiOk("corporation_join", {
+        character_id: p2Id,
+        corp_id: corpId,
+        invite_code: inviteCode,
+      });
+    });
+
+    await t.step("non-founder P2 cannot regenerate the invite code", async () => {
+      const result = await api("corporation_regenerate_invite_code", {
+        character_id: p2Id,
+      });
+      assertEquals(result.status, 403);
+      assert(
+        (result.body.error as string | undefined)?.toLowerCase().includes("founder"),
+        `Expected founder-only error, got: ${result.body.error}`,
+      );
+    });
+
+    await t.step("founder P1 CAN regenerate the invite code", async () => {
+      const result = await apiOk("corporation_regenerate_invite_code", {
+        character_id: p1Id,
+      });
+      assertExists(
+        (result as Record<string, unknown>).new_invite_code,
+        "Founder should get new_invite_code",
+      );
+    });
+  },
+});
+
+// ============================================================================
+// Group 36: corporation_join — silent auto-leave when not last member
+// ============================================================================
+
+Deno.test({
+  name: "corporation — join auto-leaves old corp silently when not last member",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    let corpIdA: string;
+    let corpIdB: string;
+    let inviteB: string;
+
+    await t.step("reset, P1+P2 in corp A, P3 founds corp B", async () => {
+      await resetDatabase([P1, P2, P3]);
+      await apiOk("join", { character_id: p1Id });
+      await apiOk("join", { character_id: p2Id });
+      await apiOk("join", { character_id: p3Id });
+      await setShipCredits(p1ShipId, 50000);
+      const p3ShipId = await shipIdFor(P3);
+      await setShipCredits(p3ShipId, 50000);
+
+      const a = await apiOk("corporation_create", {
+        character_id: p1Id,
+        name: "Corp A Auto",
+      });
+      corpIdA = (a as Record<string, unknown>).corp_id as string;
+      const inviteA = (a as Record<string, unknown>).invite_code as string;
+      await apiOk("corporation_join", {
+        character_id: p2Id,
+        corp_id: corpIdA,
+        invite_code: inviteA,
+      });
+
+      const b = await apiOk("corporation_create", {
+        character_id: p3Id,
+        name: "Corp B Auto",
+      });
+      corpIdB = (b as Record<string, unknown>).corp_id as string;
+      inviteB = (b as Record<string, unknown>).invite_code as string;
+    });
+
+    let cursorP1: number;
+    let cursorP2: number;
+
+    await t.step("capture cursors before P2 switches", async () => {
+      cursorP1 = await getEventCursor(p1Id);
+      cursorP2 = await getEventCursor(p2Id);
+    });
+
+    await t.step("P2 joins corp B (no confirm needed — still a member in A)", async () => {
+      const result = await apiOk("corporation_join", {
+        character_id: p2Id,
+        corp_id: corpIdB,
+        invite_code: inviteB,
+      });
+      const body = result as Record<string, unknown>;
+      assertEquals(body.pending, undefined, "Should NOT be pending (not last member)");
+      assertEquals(body.corp_id, corpIdB);
+    });
+
+    await t.step("P2 does NOT receive corporation.join_pending", async () => {
+      await assertNoEventsOfType(p2Id, "corporation.join_pending", cursorP2);
+    });
+
+    await t.step("P1 receives corporation.member_left for corp A", async () => {
+      const events = await eventsOfType(
+        p1Id,
+        "corporation.member_left",
+        cursorP1,
+        corpIdA,
+      );
+      assert(events.length >= 1, "P1 should see member_left in corp A");
+    });
+
+    await t.step("DB: P2 now in corp B, corp A still alive", async () => {
+      const char = await queryCharacter(p2Id);
+      assertExists(char);
+      assertEquals(char.corporation_id, corpIdB);
+
+      await withPg(async (pg) => {
+        const result = await pg.queryObject<{ disbanded_at: unknown }>(
+          `SELECT disbanded_at FROM corporations WHERE corp_id = $1`,
+          [corpIdA],
+        );
+        assertEquals(
+          result.rows[0]?.disbanded_at,
+          null,
+          "Corp A should still be active (P1 is still a member)",
+        );
+      });
+    });
+  },
+});
+
+// ============================================================================
+// Group 37: corporation_join — refused when old corp owns ships
+// ============================================================================
+
+Deno.test({
+  name: "corporation — join refused when old corp owns ships",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    let corpIdA: string;
+    let corpIdB: string;
+    let inviteB: string;
+
+    await t.step("reset, P1 founds corp A with a ship, P3 founds corp B", async () => {
+      await resetDatabase([P1, P3]);
+      await apiOk("join", { character_id: p1Id });
+      await apiOk("join", { character_id: p3Id });
+      await setShipCredits(p1ShipId, 50000);
+      const p3ShipId = await shipIdFor(P3);
+      await setShipCredits(p3ShipId, 50000);
+
+      const a = await apiOk("corporation_create", {
+        character_id: p1Id,
+        name: "Ship Refuse A",
+      });
+      corpIdA = (a as Record<string, unknown>).corp_id as string;
+
+      // Buy a corp-owned ship so A has lingering assets.
+      await setMegabankBalance(p1Id, 100000);
+      await apiOk("ship_purchase", {
+        character_id: p1Id,
+        ship_type: "autonomous_probe",
+        purchase_type: "corporation",
+      });
+
+      const b = await apiOk("corporation_create", {
+        character_id: p3Id,
+        name: "Ship Refuse B",
+      });
+      corpIdB = (b as Record<string, unknown>).corp_id as string;
+      inviteB = (b as Record<string, unknown>).invite_code as string;
+    });
+
+    await t.step("P1 cannot join corp B while corp A owns ships", async () => {
+      const result = await api("corporation_join", {
+        character_id: p1Id,
+        corp_id: corpIdB,
+        invite_code: inviteB,
+      });
+      assertEquals(result.status, 400);
+      assert(
+        (result.body.error as string | undefined)
+          ?.toLowerCase()
+          .includes("sell"),
+        `Expected sell-ships error, got: ${result.body.error}`,
+      );
+      // The error payload includes the offending ships so the LLM can list them.
+      assertExists(
+        result.body.ships,
+        "Error payload should include ships array",
+      );
+    });
+
+    await t.step("DB: P1 still in corp A, corp A still active", async () => {
+      const char = await queryCharacter(p1Id);
+      assertExists(char);
+      assertEquals(char.corporation_id, corpIdA);
+    });
+  },
+});
+
+// ============================================================================
+// Group 38: corporation_join — founder can rejoin without invite code
+// ============================================================================
+
+Deno.test({
+  name: "corporation — founder rejoin without invite code",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn(t) {
+    let corpId: string;
+
+    await t.step(
+      "reset, P1 founds corp, P2 joins, P1 leaves (corp stays alive with P2)",
+      async () => {
+        await resetDatabase([P1, P2, P3]);
+        await apiOk("join", { character_id: p1Id });
+        await apiOk("join", { character_id: p2Id });
+        await apiOk("join", { character_id: p3Id });
+        await setShipCredits(p1ShipId, 50000);
+        const result = await apiOk("corporation_create", {
+          character_id: p1Id,
+          name: "Founder Rejoin Corp",
+        });
+        corpId = (result as Record<string, unknown>).corp_id as string;
+        const inviteCode = (result as Record<string, unknown>).invite_code as string;
+        await apiOk("corporation_join", {
+          character_id: p2Id,
+          corp_id: corpId,
+          invite_code: inviteCode,
+        });
+        await apiOk("corporation_leave", { character_id: p1Id });
+      },
+    );
+
+    await t.step("P1 (founder) rejoins without invite code", async () => {
+      const result = await apiOk("corporation_join", {
+        character_id: p1Id,
+        corp_id: corpId,
+        // No invite_code provided.
+      });
+      assertEquals(
+        (result as Record<string, unknown>).corp_id,
+        corpId,
+        "Founder should successfully rejoin",
+      );
+    });
+
+    await t.step("DB: P1 is back in the corp", async () => {
+      const char = await queryCharacter(p1Id);
+      assertExists(char);
+      assertEquals(char.corporation_id, corpId);
+    });
+
+    await t.step("non-founder P3 still needs a valid invite code", async () => {
+      // Regression safety: invite-code enforcement is only relaxed for the
+      // founder. Everyone else must provide the real code.
+      const result = await api("corporation_join", {
+        character_id: p3Id,
+        corp_id: corpId,
+        // No invite_code.
+      });
+      assertEquals(result.status, 400);
     });
   },
 });

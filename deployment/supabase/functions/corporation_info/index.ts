@@ -112,7 +112,13 @@ async function handleInfo(params: {
 
   const ships = await fetchCorporationShipSummaries(supabase, corpId);
   const destroyedShips = await fetchDestroyedCorporationShips(supabase, corpId);
-  return buildCorporationMemberPayload(corporation, members, ships, destroyedShips);
+  return buildCorporationMemberPayload(
+    corporation,
+    members,
+    ships,
+    destroyedShips,
+    characterId,
+  );
 }
 
 async function loadCharacterSafe(

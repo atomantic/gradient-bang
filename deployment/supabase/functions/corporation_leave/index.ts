@@ -7,11 +7,7 @@ import {
   errorResponse,
 } from "../_shared/auth.ts";
 import { createServiceRoleClient } from "../_shared/client.ts";
-import {
-  buildEventSource,
-  emitCharacterEvent,
-  emitErrorEvent,
-} from "../_shared/events.ts";
+import { buildEventSource, emitErrorEvent } from "../_shared/events.ts";
 import { enforceRateLimit, RateLimitError } from "../_shared/rate_limiting.ts";
 import {
   parseJsonRequest,
@@ -22,6 +18,7 @@ import {
 } from "../_shared/request.ts";
 import { loadCharacter } from "../_shared/status.ts";
 import {
+  disbandCorporation,
   emitCorporationEvent,
   fetchCorporationMembers,
   fetchCorporationShipSummaries,
@@ -180,14 +177,23 @@ async function handleLeave(params: {
 
   const remainingMembers = await fetchCorporationMembers(supabase, corpId);
   if (!remainingMembers.length) {
-    await handleDisband({
-      supabase,
-      corpId,
-      corporationName: corporation.name,
-      characterId,
-      requestId,
-      taskId,
-    });
+    try {
+      await disbandCorporation(supabase, {
+        corpId,
+        corporationName: corporation.name,
+        characterId,
+        reason: "last_member_left",
+        requestId,
+        taskId,
+        method: "corporation_leave",
+      });
+    } catch (err) {
+      console.error("corporation_leave.disband", err);
+      throw new CorporationLeaveError(
+        err instanceof Error ? err.message : "Failed to disband corporation",
+        500,
+      );
+    }
     return;
   }
 
@@ -212,113 +218,6 @@ async function handleLeave(params: {
     requestId,
     taskId,
   });
-}
-
-async function handleDisband(params: {
-  supabase: ReturnType<typeof createServiceRoleClient>;
-  corpId: string;
-  corporationName: string;
-  characterId: string;
-  requestId: string;
-  taskId: string | null;
-}): Promise<void> {
-  const { supabase, corpId, corporationName, characterId, requestId, taskId } =
-    params;
-  const shipSummaries = await fetchCorporationShipSummaries(supabase, corpId);
-  const shipIds = shipSummaries.map((ship) => ship.ship_id);
-  const timestamp = new Date().toISOString();
-
-  if (shipIds.length) {
-    const { error: shipUpdateError } = await supabase
-      .from("ship_instances")
-      .update({
-        owner_type: "unowned",
-        owner_id: null,
-        owner_character_id: null,
-        owner_corporation_id: null,
-        became_unowned: timestamp,
-        former_owner_name: corporationName,
-      })
-      .in("ship_id", shipIds);
-    if (shipUpdateError) {
-      console.error("corporation_leave.ship_update", shipUpdateError);
-      throw new CorporationLeaveError(
-        "Failed to release corporation ships",
-        500,
-      );
-    }
-
-    // Detach pseudo-characters from corporation (don't delete — avoids FK
-    // constraint violations on events.character_id / events.sender_id).
-    const { error: autopilotUpdateError } = await supabase
-      .from("characters")
-      .update({ corporation_id: null })
-      .in("character_id", shipIds);
-    if (autopilotUpdateError) {
-      console.error(
-        "corporation_leave.ship_character_update",
-        autopilotUpdateError,
-      );
-      throw new CorporationLeaveError(
-        "Failed to detach corporation ship pilots",
-        500,
-      );
-    }
-  }
-
-  const source = buildEventSource("corporation_leave", requestId);
-  const disbandPayload = {
-    source,
-    corp_id: corpId,
-    corp_name: corporationName,
-    reason: "last_member_left",
-    timestamp,
-  };
-
-  await emitCharacterEvent({
-    supabase,
-    characterId,
-    eventType: "corporation.disbanded",
-    payload: disbandPayload,
-    requestId,
-    corpId: corpId,
-    taskId,
-  });
-
-  if (shipSummaries.length) {
-    const shipsPayload = {
-      source,
-      corp_id: corpId,
-      corp_name: corporationName,
-      ships: shipSummaries.map((ship) => ({
-        ship_id: ship.ship_id,
-        ship_type: ship.ship_type,
-        sector: ship.sector,
-      })),
-      timestamp,
-    };
-
-    await emitCharacterEvent({
-      supabase,
-      characterId,
-      eventType: "corporation.ships_abandoned",
-      payload: shipsPayload,
-      requestId,
-      corpId: corpId,
-      taskId,
-    });
-  }
-
-  // Soft-delete: mark disbanded instead of hard-deleting. This preserves FK
-  // references from the events table (corp_id) without needing to NULL them.
-  const { error: disbandError } = await supabase
-    .from("corporations")
-    .update({ disbanded_at: timestamp })
-    .eq("corp_id", corpId);
-  if (disbandError) {
-    console.error("corporation_leave.corp_disband", disbandError);
-    throw new CorporationLeaveError("Failed to disband corporation", 500);
-  }
 }
 
 function ensureActorMatches(actorId: string | null, characterId: string): void {

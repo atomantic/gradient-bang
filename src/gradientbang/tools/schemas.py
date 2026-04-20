@@ -461,7 +461,12 @@ DISBAND_GARRISON = FunctionSchema(
 
 CREATE_CORPORATION = FunctionSchema(
     name="create_corporation",
-    description="Create a new corporation. Requires sufficient ship credits for the founding fee.",
+    description=(
+        "Create a new corporation. Use this for onboarding and any generic "
+        "'I want a corporation' / 'set up my corp' / 'make me a corporation' "
+        "request — NOT `join_corporation`. Requires sufficient ship credits "
+        "for the founding fee."
+    ),
     properties={
         "name": {
             "type": "string",
@@ -479,21 +484,41 @@ CREATE_CORPORATION = FunctionSchema(
 
 JOIN_CORPORATION = FunctionSchema(
     name="join_corporation",
-    description="Join an existing corporation using an invite code.",
+    description=(
+        "Join a different existing corporation. Requires the target corporation's "
+        "name AND invite code. DO NOT use this tool to create a new corporation — "
+        "use `create_corporation` instead. If the user says 'I want a corporation' "
+        "or 'set up my corporation' without naming an existing one, call "
+        "`create_corporation`. Only call this tool when the user explicitly asks "
+        "to join a specific named corporation AND provides an invite code. If "
+        "either the name or invite code is missing, ask the user for them before "
+        "calling this tool. Switching corporations while already in one triggers "
+        "a confirmation modal on the user's screen (the bot handles confirm/cancel "
+        "automatically), so a high-stakes verbal heads-up is still good practice."
+    ),
     properties={
-        "corp_id": {
-            "type": "string",
-            "description": "Corporation identifier to join",
-            "minLength": 1,
-        },
         "corp_name": {
             "type": "string",
-            "description": "Corporation display name to join (case-insensitive). Ignored if corp_id is provided.",
+            "description": (
+                "Target corporation display name (case-insensitive). Required "
+                "unless corp_id is provided."
+            ),
+            "minLength": 1,
+        },
+        "corp_id": {
+            "type": "string",
+            "description": (
+                "Target corporation identifier. Prefer passing corp_name unless "
+                "you already know the id from a recent corporation_info result."
+            ),
             "minLength": 1,
         },
         "invite_code": {
             "type": "string",
-            "description": "Invite code provided by the corporation",
+            "description": (
+                "Invite passphrase provided by the corporation (e.g. 'nebula-drift'). "
+                "Required for anyone joining someone else's corporation."
+            ),
             "minLength": 1,
         },
         "character_id": {
@@ -501,7 +526,7 @@ JOIN_CORPORATION = FunctionSchema(
             "description": "Character joining the corporation (defaults to the authenticated pilot)",
         },
     },
-    required=["invite_code"],
+    required=["corp_name", "invite_code"],
 )
 
 LEAVE_CORPORATION = FunctionSchema(
@@ -524,13 +549,19 @@ LEAVE_CORPORATION = FunctionSchema(
 KICK_CORPORATION_MEMBER = FunctionSchema(
     name="kick_corporation_member",
     description=(
-        "Remove another member from your corporation. "
-        "They lose corporation access and need a new invite to rejoin."
+        "Remove another member from your corporation. Only the corporation "
+        "founder can kick members. The action opens a confirmation modal on "
+        "the user's screen; the bot handles confirm/cancel automatically, "
+        "so do not call the tool again after the first call."
     ),
     properties={
         "target_id": {
             "type": "string",
-            "description": "Character ID of the member to remove",
+            "description": (
+                "Display name (preferred) or character_id of the member to "
+                "remove. Use the name as shown in corporation_info — the bot "
+                "will resolve it to the correct character."
+            ),
             "minLength": 1,
         },
         "character_id": {
@@ -543,7 +574,14 @@ KICK_CORPORATION_MEMBER = FunctionSchema(
 
 CORPORATION_INFO = FunctionSchema(
     name="corporation_info",
-    description="Get corporation information. By default returns your own corporation's info including members and ships. Can also look up a specific corporation by ID, or list all corporations.",
+    description=(
+        "Get corporation information. By default returns your own corporation's "
+        "info including members and ships. Can also look up a specific corporation "
+        "by ID, or list all corporations. The invite code is included only when "
+        "you are the founder of the corporation; non-founder members receive "
+        "is_founder: false and no invite_code — tell them only the founder can "
+        "view or regenerate it."
+    ),
     properties={
         "list_all": {
             "type": "boolean",

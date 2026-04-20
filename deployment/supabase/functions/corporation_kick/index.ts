@@ -7,12 +7,17 @@ import {
   errorResponse,
 } from "../_shared/auth.ts";
 import { createServiceRoleClient } from "../_shared/client.ts";
-import { buildEventSource, emitErrorEvent } from "../_shared/events.ts";
+import {
+  buildEventSource,
+  emitCharacterEvent,
+  emitErrorEvent,
+} from "../_shared/events.ts";
 import { enforceRateLimit, RateLimitError } from "../_shared/rate_limiting.ts";
 import {
   parseJsonRequest,
   requireString,
   optionalString,
+  optionalBoolean,
   resolveRequestId,
   respondWithError,
 } from "../_shared/request.ts";
@@ -70,6 +75,7 @@ Deno.serve(traced("corporation_kick", async (req, trace) => {
   const characterLabel = legacyCharacterLabel ?? rawCharacterId;
   const targetLabel = requireString(payload, "target_id");
   const actorCharacterLabel = optionalString(payload, "actor_character_id");
+  const confirm = optionalBoolean(payload, "confirm") ?? false;
 
   const characterId = await canonicalizeCharacterId(rawCharacterId);
   const targetId = await canonicalizeCharacterId(targetLabel);
@@ -80,11 +86,7 @@ Deno.serve(traced("corporation_kick", async (req, trace) => {
 
   ensureActorMatches(actorCharacterId, characterId);
 
-  trace.setInput({ characterId, targetId, requestId });
-
-  if (characterId === targetId) {
-    return errorResponse("Use leave to exit your corporation", 400);
-  }
+  trace.setInput({ characterId, targetId, requestId, confirm });
 
   if (characterId === targetId) {
     return errorResponse("Use leave to exit your corporation", 400);
@@ -111,8 +113,12 @@ Deno.serve(traced("corporation_kick", async (req, trace) => {
   }
 
   try {
-    const sHandleKick = trace.span("handle_kick", { characterId, targetId });
-    await handleKick({
+    const sHandleKick = trace.span("handle_kick", {
+      characterId,
+      targetId,
+      confirm,
+    });
+    const result = await handleKick({
       supabase,
       characterId,
       targetId,
@@ -120,10 +126,16 @@ Deno.serve(traced("corporation_kick", async (req, trace) => {
       targetLabel,
       requestId,
       taskId,
+      confirm,
     });
-    sHandleKick.end();
-    trace.setOutput({ request_id: requestId, characterId, targetId });
-    return successResponse({ request_id: requestId });
+    sHandleKick.end(result);
+    trace.setOutput({
+      request_id: requestId,
+      characterId,
+      targetId,
+      pending: result.pending ?? false,
+    });
+    return successResponse({ ...result, request_id: requestId });
   } catch (err) {
     if (err instanceof CorporationKickError) {
       return errorResponse(err.message, err.status);
@@ -141,7 +153,8 @@ async function handleKick(params: {
   targetLabel: string;
   requestId: string;
   taskId: string | null;
-}): Promise<void> {
+  confirm: boolean;
+}): Promise<Record<string, unknown>> {
   const {
     supabase,
     characterId,
@@ -150,7 +163,125 @@ async function handleKick(params: {
     targetLabel,
     requestId,
     taskId,
+    confirm,
   } = params;
+
+  // Validate on BOTH the pending and confirm paths — the confirm round-trip
+  // must re-verify state so a stale client message cannot bypass checks.
+  const { kicker, target, corporation, corpId } = await validateKick({
+    supabase,
+    characterId,
+    targetId,
+  });
+
+  const kickerName =
+    typeof kicker.name === "string" && kicker.name.trim().length > 0
+      ? kicker.name.trim()
+      : characterId;
+  const targetName =
+    typeof target.name === "string" && target.name.trim().length > 0
+      ? target.name.trim()
+      : targetId;
+
+  if (!confirm) {
+    // Two-step confirm: emit a character-scoped pending event so ONLY the
+    // kicker's client opens the confirmation modal. No state changes.
+    const source = buildEventSource("corporation_kick", requestId);
+    await emitCharacterEvent({
+      supabase,
+      characterId,
+      eventType: "corporation.kick_pending",
+      payload: {
+        source,
+        corp_id: corpId,
+        corp_name: corporation.name,
+        target_id: targetLabel,
+        target_name: targetName,
+        timestamp: new Date().toISOString(),
+      },
+      requestId,
+      corpId,
+      taskId,
+    });
+
+    return {
+      success: true,
+      pending: true,
+      target_id: targetLabel,
+      target_name: targetName,
+      corp_id: corpId,
+      corp_name: corporation.name,
+    };
+  }
+
+  const timestamp = new Date().toISOString();
+  await markCorporationMembershipLeft(supabase, corpId, targetId, timestamp);
+
+  const { error: targetUpdateError } = await supabase
+    .from("characters")
+    .update({
+      corporation_id: null,
+      corporation_joined_at: null,
+      last_active: timestamp,
+    })
+    .eq("character_id", targetId);
+  if (targetUpdateError) {
+    console.error("corporation_kick.character_update", targetUpdateError);
+    throw new CorporationKickError("Failed to update target state", 500);
+  }
+
+  const remainingMembers = await fetchCorporationMembers(supabase, corpId);
+  if (!remainingMembers.length) {
+    throw new CorporationKickError("Unexpected empty corporation state", 500);
+  }
+
+  const source = buildEventSource("corporation_kick", requestId);
+  const payload = {
+    source,
+    corp_id: corpId,
+    corp_name: corporation.name,
+    kicked_member_id: targetLabel,
+    kicked_member_name: targetName,
+    kicker_id: characterLabel,
+    kicker_name: kickerName,
+    member_count: remainingMembers.length,
+    timestamp,
+  };
+
+  await emitCorporationEvent(supabase, corpId, {
+    eventType: "corporation.member_kicked",
+    payload,
+    requestId,
+    taskId,
+  });
+
+  return {
+    success: true,
+    corp_id: corpId,
+    corp_name: corporation.name,
+    member_count: remainingMembers.length,
+  };
+}
+
+async function validateKick(params: {
+  supabase: ReturnType<typeof createServiceRoleClient>;
+  characterId: string;
+  targetId: string;
+}): Promise<{
+  kicker: {
+    character_id: string;
+    name: string | null;
+    corporation_id: string | null;
+  };
+  target: {
+    character_id: string;
+    name: string | null;
+    corporation_id: string | null;
+  };
+  corporation: Awaited<ReturnType<typeof loadCorporationById>>;
+  corpId: string;
+}> {
+  const { supabase, characterId, targetId } = params;
   const kicker = await loadCharacterSummary(
     supabase,
     characterId,
@@ -178,55 +309,15 @@ async function handleKick(params: {
     throw new CorporationKickError("Not authorized for this corporation", 403);
   }
 
-  const timestamp = new Date().toISOString();
-  await markCorporationMembershipLeft(supabase, corpId, targetId, timestamp);
-
-  const { error: targetUpdateError } = await supabase
-    .from("characters")
-    .update({
-      corporation_id: null,
-      corporation_joined_at: null,
-      last_active: timestamp,
-    })
-    .eq("character_id", targetId);
-  if (targetUpdateError) {
-    console.error("corporation_kick.character_update", targetUpdateError);
-    throw new CorporationKickError("Failed to update target state", 500);
-  }
-
   const corporation = await loadCorporationById(supabase, corpId);
-  const remainingMembers = await fetchCorporationMembers(supabase, corpId);
-  if (!remainingMembers.length) {
-    throw new CorporationKickError("Unexpected empty corporation state", 500);
+  if (corporation.founder_id !== characterId) {
+    throw new CorporationKickError(
+      "Only the corporation founder can remove members",
+      403,
+    );
   }
 
-  const source = buildEventSource("corporation_kick", requestId);
-  const kickerName =
-    typeof kicker.name === "string" && kicker.name.trim().length > 0
-      ? kicker.name.trim()
-      : characterId;
-  const targetName =
-    typeof target.name === "string" && target.name.trim().length > 0
-      ? target.name.trim()
-      : targetId;
-  const payload = {
-    source,
-    corp_id: corpId,
-    corp_name: corporation.name,
-    kicked_member_id: targetLabel,
-    kicked_member_name: targetName,
-    kicker_id: characterLabel,
-    kicker_name: kickerName,
-    member_count: remainingMembers.length,
-    timestamp,
-  };
-
-  await emitCorporationEvent(supabase, corpId, {
-    eventType: "corporation.member_kicked",
-    payload,
-    requestId,
-    taskId,
-  });
+  return { kicker, target, corporation, corpId };
 }
 
 async function loadCharacterSummary(

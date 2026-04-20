@@ -1,8 +1,8 @@
 """Shared tool schemas for VoiceAgent and TaskAgent.
 
 Exports curated ToolsSchema sets:
-- VOICE_TOOLS: 17 tools for the conversational voice agent
-- TASK_TOOLS: 32 tools for autonomous task execution
+- VOICE_TOOLS: conversational tools for the voice agent
+- TASK_TOOLS: autonomous game actions for task execution
 """
 
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -79,7 +79,9 @@ VOICE_TOOLS = ToolsSchema(
         RENAME_SHIP,
         RENAME_CORPORATION,
         CREATE_CORPORATION,
+        JOIN_CORPORATION,
         LEAVE_CORPORATION,
+        KICK_CORPORATION_MEMBER,
         SELL_SHIP,
         SEND_MESSAGE,
         # Combat
@@ -122,8 +124,9 @@ TASK_TOOLS = ToolsSchema(
         COMBAT_INITIATE,
         COMBAT_ACTION,
         # Corporation
-        JOIN_CORPORATION,
-        KICK_CORPORATION_MEMBER,
+        # join_corporation and kick_corporation_member are voice-only: they
+        # go through a UI confirmation flow that an autonomous TaskAgent
+        # cannot drive.
         CORPORATION_INFO,
         # Ship
         MY_STATUS,

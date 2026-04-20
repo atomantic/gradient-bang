@@ -27,7 +27,7 @@ import {
 import { acquirePgClient } from "../_shared/pg.ts";
 import { pgBuildStatusPayload } from "../_shared/pg_queries.ts";
 import {
-  generateInviteCode,
+  generateUniqueInviteCode,
   upsertCorporationMembership,
 } from "../_shared/corporations.ts";
 import { traced } from "../_shared/weave.ts";
@@ -146,7 +146,7 @@ async function handleCreate(params: {
     );
   }
 
-  const inviteCode = generateInviteCode();
+  const inviteCode = await generateUniqueInviteCode(supabase);
   const inserted = await insertCorporation({
     supabase,
     name: normalizedName,

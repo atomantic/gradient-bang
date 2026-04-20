@@ -176,11 +176,19 @@ async function handleRename(params: {
     listCorporationMemberIds(supabase, corpId),
   ]);
 
-  const corpPayload = buildCorporationMemberPayload(corporation, members, ships, destroyedShips);
   const source = buildEventSource("corporation_rename", requestId);
 
-  // Emit corporation.data to every active member so their clients hydrate
+  // Emit corporation.data to every active member so their clients hydrate.
+  // Build the payload per-member so the invite_code is only sent to the
+  // founder (buildCorporationMemberPayload gates it on requesterCharacterId).
   for (const memberId of memberIds) {
+    const corpPayload = buildCorporationMemberPayload(
+      corporation,
+      members,
+      ships,
+      destroyedShips,
+      memberId,
+    );
     await emitCharacterEvent({
       supabase,
       characterId: memberId,

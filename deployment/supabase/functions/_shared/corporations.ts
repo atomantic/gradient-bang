@@ -1,6 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { recordEventWithRecipients } from "./events.ts";
+import {
+  buildEventSource,
+  emitCharacterEvent,
+  recordEventWithRecipients,
+} from "./events.ts";
 import { fetchActiveTaskIdsByShip } from "./tasks.ts";
 import type { ShipDefinitionRow } from "./status.ts";
 
@@ -52,14 +56,87 @@ export interface DestroyedCorporationShip {
   destroyed_at: string;
 }
 
-const INVITE_BYTES = 4;
+// Space-themed words for voice-friendly two-word invite passphrases.
+// Curated to avoid homophones, confusing spellings, and words where TTS/ASR
+// round-trips tend to fail (e.g. "knight"/"night", "flour"/"flower",
+// "sun"/"son"). Words kept short and unambiguous so humans can speak them.
+const INVITE_WORDS: readonly string[] = [
+  "alpha", "amber", "anchor", "arc", "arrow", "ash", "aster", "atlas", "atom",
+  "aurora", "azure", "beacon", "beta", "binary", "blaze", "blue", "bolt",
+  "boson", "brass", "bronze", "canopy", "canyon", "carbon", "cargo", "cedar",
+  "cinder", "cipher", "citadel", "cliff", "cluster", "cobalt", "comet",
+  "compass", "copper", "coral", "cortex", "cosmic", "crater", "crest",
+  "crimson", "crown", "crystal", "cypher", "delta", "dock", "domain", "dune",
+  "dusk", "eagle", "echo", "eclipse", "ember", "emerald", "engine", "ether",
+  "falcon", "flare", "flint", "forge", "fox", "fractal", "frost", "galaxy",
+  "gamma", "garnet", "glacier", "glint", "granite", "gravity", "grove",
+  "harbor", "hawk", "haven", "helios", "helix", "herald", "horizon", "hydro",
+  "ice", "indigo", "iris", "iron", "ivory", "jade", "jasper", "jolt", "keel",
+  "kelp", "kestrel", "keystone", "kodiak", "krypton", "lantern", "ledger",
+  "lithium", "lumen", "lunar", "lynx", "magma", "magnet", "mantle", "marble",
+  "marsh", "meadow", "mercury", "meridian", "mesa", "meteor", "mist", "mongoose",
+  "moon", "mosaic", "nebula", "neon", "nimbus", "nomad", "north", "nova",
+  "nucleus", "oak", "obsidian", "omega", "onyx", "opal", "orbit", "orchid",
+  "osprey", "oxygen", "panther", "patrol", "peak", "pebble", "phantom",
+  "phoenix", "photon", "pilot", "pine", "pioneer", "pixel", "plasma",
+  "platinum", "prism", "proton", "pulse", "python", "quartz", "quasar",
+  "quest", "radar", "radon", "raven", "redwood", "rift", "ripple", "river",
+  "rocket", "ruby", "rune", "saber", "saffron", "sage", "sapphire", "scout",
+  "sentry", "shadow", "shield", "sierra", "signal", "silver", "solar",
+  "solstice", "sonar", "sphere", "spire", "spruce", "stellar", "stone",
+  "storm", "stratus", "summit", "surge", "talon", "tangent", "tempest",
+  "terra", "thunder", "tiger", "titan", "tonic", "topaz", "torch", "totem",
+  "tower", "tundra", "turbo", "ultra", "umbra", "valor", "vanguard", "vector",
+  "velvet", "vertex", "vesper", "violet", "vortex", "voyager", "waft",
+  "warden", "watch", "wave", "whisper", "wolf", "xenon", "yonder", "zenith",
+  "zephyr", "zeta", "zinc",
+];
 
+function pickWord(): string {
+  const idx = Math.floor(Math.random() * INVITE_WORDS.length);
+  return INVITE_WORDS[idx];
+}
+
+function makePassphrase(): string {
+  return `${pickWord()}-${pickWord()}`;
+}
+
+/**
+ * Legacy single-shot generator. Retained for code paths that do not have a
+ * Supabase client at hand; prefer {@link generateUniqueInviteCode} so we can
+ * check for live collisions. Two-word passphrases collide more often than the
+ * old 4-byte hex codes, though with the current word list it is still rare.
+ */
 export function generateInviteCode(): string {
-  const buffer = new Uint8Array(INVITE_BYTES);
-  crypto.getRandomValues(buffer);
-  return Array.from(buffer, (byte) => byte.toString(16).padStart(2, "0")).join(
-    "",
-  );
+  return makePassphrase();
+}
+
+/**
+ * Generates a two-word passphrase and verifies no other *active* corporation
+ * is already using it. Retries a small number of times before giving up —
+ * with ~200 words the chance of repeated collisions is negligible.
+ */
+export async function generateUniqueInviteCode(
+  supabase: SupabaseClient,
+  maxAttempts = 8,
+): Promise<string> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const code = makePassphrase();
+    const { data, error } = await supabase
+      .from("corporations")
+      .select("corp_id")
+      .eq("invite_code", code)
+      .is("disbanded_at", null)
+      .maybeSingle();
+    if (error) {
+      console.error("corporations.invite_code.collision_check", error);
+      throw new Error("Failed to generate invite code");
+    }
+    if (!data) {
+      return code;
+    }
+  }
+  throw new Error("Unable to generate a unique invite code");
 }
 
 export async function loadCorporationById(
@@ -317,17 +394,27 @@ export function buildCorporationMemberPayload(
   members: CorporationMemberSummary[],
   ships: CorporationShipSummary[],
   destroyedShips: DestroyedCorporationShip[] = [],
+  requesterCharacterId: string | null = null,
 ): Record<string, unknown> {
-  return {
+  const isFounder =
+    requesterCharacterId !== null && corp.founder_id === requesterCharacterId;
+  const payload: Record<string, unknown> = {
     ...buildCorporationPublicPayload(corp, members.length),
     founder_id: corp.founder_id,
-    invite_code: corp.invite_code,
-    invite_code_generated: corp.invite_code_generated,
-    invite_code_generated_by: corp.invite_code_generated_by,
+    is_founder: isFounder,
     members,
     ships,
     destroyed_ships: destroyedShips,
   };
+  // Invite code and regeneration metadata are founder-only. Non-founder
+  // members see `is_founder: false` and omit the fields entirely so the
+  // LLM/UI can tell the player only the founder can view or regenerate it.
+  if (isFounder) {
+    payload.invite_code = corp.invite_code;
+    payload.invite_code_generated = corp.invite_code_generated;
+    payload.invite_code_generated_by = corp.invite_code_generated_by;
+  }
+  return payload;
 }
 
 export async function emitCorporationEvent(
@@ -351,6 +438,139 @@ export async function emitCorporationEvent(
     actorCharacterId: options.actorCharacterId ?? null,
     taskId: options.taskId ?? null,
   });
+}
+
+export type DisbandReason =
+  | "last_member_left"
+  | "last_member_joined_other"
+  | "kick_emptied_corp";
+
+export interface DisbandCorporationOptions {
+  corpId: string;
+  corporationName: string;
+  characterId: string;
+  reason: DisbandReason;
+  requestId: string;
+  taskId?: string | null;
+  method?: string;
+}
+
+/**
+ * Disband a corporation: release any remaining corp-owned ships, emit the
+ * disband events, and soft-delete the corporation row.
+ *
+ * Callers in the user-facing flow are expected to refuse the action upfront
+ * when the corp still owns ships (so the user can sell them first). This
+ * helper retains the ship-release logic as a *safety net* — if some future
+ * caller skips that check, the ships are still released with a
+ * `corporation.ships_abandoned` event rather than being orphaned by a
+ * soft-deleted corp. Defense in depth.
+ */
+export async function disbandCorporation(
+  supabase: SupabaseClient,
+  options: DisbandCorporationOptions,
+): Promise<void> {
+  const {
+    corpId,
+    corporationName,
+    characterId,
+    reason,
+    requestId,
+    taskId,
+    method = "corporation_leave",
+  } = options;
+
+  const shipSummaries = await fetchCorporationShipSummaries(supabase, corpId);
+  const shipIds = shipSummaries.map((ship) => ship.ship_id);
+  const timestamp = new Date().toISOString();
+
+  if (shipIds.length) {
+    // Safety net: callers should have refused if any corp ships remain, so
+    // this path only fires if something upstream missed the check.
+    const { error: shipUpdateError } = await supabase
+      .from("ship_instances")
+      .update({
+        owner_type: "unowned",
+        owner_id: null,
+        owner_character_id: null,
+        owner_corporation_id: null,
+        became_unowned: timestamp,
+        former_owner_name: corporationName,
+      })
+      .in("ship_id", shipIds);
+    if (shipUpdateError) {
+      console.error("corporations.disband.ship_update", shipUpdateError);
+      throw new Error("Failed to release corporation ships");
+    }
+
+    // Detach pseudo-characters from corporation (don't delete — avoids FK
+    // constraint violations on events.character_id / events.sender_id).
+    const { error: autopilotUpdateError } = await supabase
+      .from("characters")
+      .update({ corporation_id: null })
+      .in("character_id", shipIds);
+    if (autopilotUpdateError) {
+      console.error(
+        "corporations.disband.ship_character_update",
+        autopilotUpdateError,
+      );
+      throw new Error("Failed to detach corporation ship pilots");
+    }
+  }
+
+  const source = buildEventSource(method, requestId);
+  const disbandPayload = {
+    source,
+    corp_id: corpId,
+    corp_name: corporationName,
+    reason,
+    timestamp,
+  };
+
+  await emitCharacterEvent({
+    supabase,
+    characterId,
+    eventType: "corporation.disbanded",
+    payload: disbandPayload,
+    requestId,
+    corpId,
+    taskId,
+  });
+
+  if (shipSummaries.length) {
+    const shipsPayload = {
+      source,
+      corp_id: corpId,
+      corp_name: corporationName,
+      ships: shipSummaries.map((ship) => ({
+        ship_id: ship.ship_id,
+        ship_type: ship.ship_type,
+        sector: ship.sector,
+      })),
+      timestamp,
+    };
+
+    await emitCharacterEvent({
+      supabase,
+      characterId,
+      eventType: "corporation.ships_abandoned",
+      payload: shipsPayload,
+      requestId,
+      corpId,
+      taskId,
+    });
+  }
+
+  // Soft-delete: mark disbanded instead of hard-deleting. This preserves FK
+  // references from the events table (corp_id) without needing to NULL them.
+  const { error: disbandError } = await supabase
+    .from("corporations")
+    .update({ disbanded_at: timestamp })
+    .eq("corp_id", corpId);
+  if (disbandError) {
+    console.error("corporations.disband.corp_update", disbandError);
+    throw new Error("Failed to disband corporation");
+  }
 }
 
 async function fetchActiveMembershipRows(

@@ -12,7 +12,21 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{12}"
 )
+_FULL_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{12}$"
+)
 _BRACKET_HEX_RE = re.compile(r"\[([0-9a-fA-F]{8,})\]")
+
+
+def looks_like_uuid(value: Any) -> bool:
+    """Return True if `value` is a string that matches the full UUID shape."""
+    if not isinstance(value, str):
+        return False
+    return bool(_FULL_UUID_RE.match(value.strip()))
 
 
 def short_id(value: Any, prefix_len: int = _ID_PREFIX_LEN) -> Optional[str]:
@@ -139,6 +153,20 @@ def summarize_corporation_info(result: Any) -> str:
     else:
         header += f" (ships: {ship_count})"
     lines: List[str] = [header]
+
+    # Invite code visibility is edge-gated: the payload only includes
+    # `invite_code` when the requester is the founder. For non-founder
+    # members, surface an explicit note so the LLM can tell the player
+    # only the founder can view/regenerate it (instead of claiming
+    # ignorance).
+    is_founder = corp.get("is_founder")
+    invite_code = corp.get("invite_code")
+    if is_founder is True and isinstance(invite_code, str) and invite_code:
+        lines.append(f"Invite code (founder-only, share verbally): {invite_code}")
+    elif is_founder is False:
+        lines.append(
+            "Invite code: only the corporation founder can view or regenerate it."
+        )
 
     members = corp.get("members")
     if isinstance(members, list) and members:

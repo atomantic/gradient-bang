@@ -629,6 +629,77 @@ export function GameProvider({ children }: GameProviderProps) {
               break
             }
 
+            case "corporation.kick_pending": {
+              // Character-scoped event — only the kicker (this player)
+              // receives it. Opens a destructive confirmation modal.
+              // KickConfirmDialog sends confirm-kick / cancel-kick back
+              // to the bot based on the user's choice.
+              console.debug("[GAME EVENT] Corporation kick pending", e.payload)
+              const data = e.payload as {
+                corp_id: string
+                corp_name: string
+                target_id: string
+                target_name: string
+              }
+              useGameStore.getState().setActiveModal("confirm_kick", {
+                target_id: data.target_id,
+                target_name: data.target_name,
+                corp_id: data.corp_id,
+                corp_name: data.corp_name,
+              } satisfies ConfirmKickData)
+              break
+            }
+
+            case "corporation.join_pending": {
+              // Character-scoped event — only the joiner receives it.
+              // Fires only in the last-member-of-old-corp case where the
+              // old corp would be disbanded. The modal warns about the
+              // disband and echoes corp_id + invite_code back via
+              // confirm-join; the edge function re-validates before
+              // mutating.
+              console.debug("[GAME EVENT] Corporation join pending", e.payload)
+              const data = e.payload as {
+                corp_id: string
+                corp_name: string
+                invite_code: string
+                old_corp_id: string
+                old_corp_name: string
+                will_disband: boolean
+              }
+              useGameStore.getState().setActiveModal("confirm_join", {
+                corp_id: data.corp_id,
+                corp_name: data.corp_name,
+                invite_code: data.invite_code,
+                old_corp_id: data.old_corp_id,
+                old_corp_name: data.old_corp_name,
+                will_disband: data.will_disband,
+              } satisfies ConfirmJoinData)
+              break
+            }
+
+            case "corporation.member_left": {
+              // Emitted corp-scoped when a member leaves voluntarily or
+              // is kicked silently via auto-leave. Refresh corp data so
+              // the surviving members see the updated roster.
+              console.debug("[GAME EVENT] Corporation member left", e.payload)
+              useGameStore.getState().dispatchAction({
+                type: "get-my-corporation",
+              })
+              break
+            }
+
+            case "corporation.member_kicked": {
+              // Emitted corp-scoped on confirmed kick. Refresh roster
+              // for everyone still in the corp. The kicked member gets
+              // their own state reset via corporation.data from a
+              // subsequent status refresh.
+              console.debug("[GAME EVENT] Corporation member kicked", e.payload)
+              useGameStore.getState().dispatchAction({
+                type: "get-my-corporation",
+              })
+              break
+            }
+
             case "corporation.data": {
               console.debug("[GAME EVENT] Corporation data", e.payload)
               const data = e.payload as { corporation: Corporation | null }
