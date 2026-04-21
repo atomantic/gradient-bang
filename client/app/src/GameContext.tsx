@@ -738,24 +738,19 @@ export function GameProvider({ children }: GameProviderProps) {
 
             case "corporation.member_left": {
               // Emitted corp-scoped when a member leaves voluntarily or
-              // is kicked silently via auto-leave. Refresh corp data so
-              // the surviving members see the updated roster.
+              // is kicked silently via auto-leave. The edge function
+              // emits status.update + map data to affected clients
+              // directly — no client-side dispatch needed.
               console.debug("[GAME EVENT] Corporation member left", e.payload)
-              useGameStore.getState().dispatchAction({
-                type: "get-my-corporation",
-              })
               break
             }
 
             case "corporation.member_kicked": {
-              // Emitted corp-scoped on confirmed kick. Refresh roster
-              // for everyone still in the corp. The kicked member gets
-              // their own state reset via corporation.data from a
-              // subsequent status refresh.
+              // Emitted corp-scoped on confirmed kick. The kicked member
+              // gets their own state reset via corporation.data from the
+              // edge function. Remaining members receive status.update
+              // directly — no client-side dispatch needed.
               console.debug("[GAME EVENT] Corporation member kicked", e.payload)
-              useGameStore.getState().dispatchAction({
-                type: "get-my-corporation",
-              })
               break
             }
 
