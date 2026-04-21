@@ -16,7 +16,13 @@
 -- ============================================================================
 
 -- Unschedule the cron job (no-op if already unscheduled)
-SELECT cron.unschedule('event-pruning-worker');
+DO $$
+BEGIN
+  PERFORM cron.unschedule('event-pruning-worker');
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'event-pruning-worker cron job not found, skipping unschedule';
+END;
+$$;
 
 -- Update function: 72 hours -> 14 days
 CREATE OR REPLACE FUNCTION prune_stale_events()
