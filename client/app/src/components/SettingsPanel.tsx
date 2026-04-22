@@ -143,11 +143,11 @@ const VOICE_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: "voss", label: "Dockhand Voss" },
     { value: "gordon", label: "Helmsman Gordon" },
   ],
-  Türkçe: [{ value: "taylan", label: "Seyirci Taylan" }],
   Español: [{ value: "lucia", label: "Navegante Lucia" }],
   Français: [{ value: "celeste", label: "Navigatrice Celeste" }],
-  Português: [{ value: "estrela", label: "Navegadora Estrela" }],
   Hindi: [{ value: "priya", label: "Navik Priya" }],
+  Português: [{ value: "estrela", label: "Navegadora Estrela" }],
+  Türkçe: [{ value: "taylan", label: "Seyirci Taylan" }],
 }
 
 interface SettingsPanelProps {
