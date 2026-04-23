@@ -24,7 +24,7 @@ This tool is **not** a production-client replica. It does not render sector view
 ## What this IS and ISN'T
 
 **IS:**
-- A standalone Vite + React app at `client/debug/`
+- A standalone Vite + React app at `client/combat-sim/`
 - A self-contained in-browser combat engine — no server, no database, no network for engine operation
 - A per-entity event feed: "here's everything the engine emitted to this entity"
 - Per-entity action injection: "submit a combat action as this entity" → dispatches directly into the engine
@@ -58,7 +58,7 @@ This tool is **not** a production-client replica. It does not render sector view
 
 ### Location
 
-New Vite + React app at `client/debug/`. Configured as a pnpm workspace sibling of `client/app/`. Builds and runs independently. Imports **only** from `client/debug/src/` — no reach into `client/app/`, no reach into `deployment/`.
+New Vite + React app at `client/combat-sim/`. Configured as a pnpm workspace sibling of `client/app/`. Builds and runs independently. Imports **only** from `client/combat-sim/src/` — no reach into `client/app/`, no reach into `deployment/`.
 
 ### Three halves
 
@@ -143,6 +143,23 @@ class InMemoryEmitter implements Emitter {
 
 Recipient computation lives inside the engine (ported from `_shared/visibility.ts`) so the rules travel with the engine when it moves to production. The harness trusts whatever recipient list the emitter sees and does pure filtering on top.
 
+### Event flow for garrisons
+
+Garrisons are static sector assets that an absent owner (in a different sector) still has skin in the game for. The event-routing + LLM-invocation rules are split across two layers:
+
+1. **Engine `recipients` list** — controls *delivery*. For any combat event involving a garrison, the owner, the owner's corp members, and same-sector observers are all added to `event.recipients`. Uninvolved bystanders (different sector, not in the owner's corp) are NEVER in the set. See `combatRecipients` in `engine.ts` and the per-test lock-in in `agent.test.ts > remote garrison event flow`.
+2. **Agent XML filter** (`toAgentEventXml`) — controls *context appending*. Checks both ship participation AND garrison ownership: a viewer whose garrison is in the fight passes `isInvolved` even if they're not a ship participant.
+3. **Inference trigger** (`run_llm`, production-only — harness has no voice loop) — controls whether the incoming event *wakes the voice agent*. The harness doesn't enforce this; the production migration must:
+   - `combat.round_waiting` / `round_resolved` / `ended` delivered to the absent garrison owner → `run_llm: false` (silent context append). The voice agent must not narrate "round 3 of your garrison's fight" every 30s. RTVI events still fire so the client UI can update the garrison's health bar.
+   - `garrison.destroyed` delivered to the owner → `run_llm: true`. The voice agent SHOULD speak — this is the one moment the player needs a verbal heads-up ("Commander, the garrison in sector 42 has fallen.").
+   - Same-sector observer receiving combat events about a hostile garrison → standard combat rules apply (`run_llm: true` on their own `combat.round_waiting`, since they're a participant and must act).
+
+**Envelope metadata contract.** Every garrison-related event carries discriminator attributes on the XML envelope so UI / filter code doesn't have to parse the summary body:
+- `combat.round_waiting` / `round_resolved` / `ended` that include a garrison: `garrison_id="<combatant_id>"` + `garrison_owner="<character_id>"` appended alongside `combat_id`.
+- `garrison.destroyed`: `garrison_id` + `garrison_owner`. The payload additionally includes `internal_garrison_id` (the world-map key, used for row lookup) and `combatant_id` (stable `garrison:<sector>:<owner>` form — same as `garrison_id`).
+
+**Non-involvement is a ROUTING rule, not a filter rule.** If a player is neither in the garrison's sector nor in the owner's corp, they must not be in `event.recipients` in the first place — the filter shouldn't need to defend against them. The "uninvolved player receives nothing" scenario asserts this at the engine layer, not the XML layer.
+
 ### World shape
 
 Minimum viable world — combat-adjacent state only. No economy, no ports, no travel costs, no quests:
@@ -223,7 +240,7 @@ No persistence across page reloads in MVP — scenarios are meant to be reproduc
 
 ## What we build
 
-All new, all under `client/debug/`:
+All new, all under `client/combat-sim/`:
 
 **Scaffold**
 - `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, `src/main.tsx`, `src/App.tsx`
@@ -283,7 +300,7 @@ Do not open the migration PR until:
 
 1. **Contract preserved.** Request/response shapes, status codes, and `events` rows are byte-compatible before and after. Anything observable to the bot or client stays identical.
 2. **One PR, atomic swap.** The engine ships or it doesn't. No parallel-engine feature flag.
-3. **Files port as-is.** `client/debug/src/engine/*.ts` → `deployment/supabase/functions/_shared/combat/*.ts` with minimal diff — only type-stripping imports and any Deno-isms added.
+3. **Files port as-is.** `client/combat-sim/src/engine/*.ts` → `deployment/supabase/functions/_shared/combat/*.ts` with minimal diff — only type-stripping imports and any Deno-isms added.
 4. **Old code parked, not deleted.** Swap PR moves old `_shared/combat_*.ts` into `_shared/_legacy_combat/` (via `git mv`). Delete in a follow-up PR after a week of clean prod combat.
 
 ### Steps
@@ -291,7 +308,7 @@ Do not open the migration PR until:
 **Step 0 — Pre-flight.** Work through the readiness checklist. Write any DB migrations (e.g. `combat_strategies` table, any `sector_contents.combat` JSONB shape changes) and confirm they are forward-compatible with both old and new engines — this unblocks rollback.
 
 **Step 1 — Copy engine into the shared tree.**
-- `git mv client/debug/src/engine/{engine,types,events,resolution,visibility,emitter}.ts` → `deployment/supabase/functions/_shared/combat/`
+- `git mv client/combat-sim/src/engine/{engine,types,events,resolution,visibility,emitter}.ts` → `deployment/supabase/functions/_shared/combat/`
 - Add `_shared/combat/supabase_emitter.ts` implementing `Emitter` against `record_event_with_recipients`
 - Add `_shared/combat/supabase_storage.ts` if a Storage port was introduced; otherwise keep the existing JSONB-in-`sector_contents` pattern and pass the loaded state into the engine constructor
 - `git mv deployment/supabase/functions/_shared/combat_*.ts` → `_shared/_legacy_combat/`
@@ -333,6 +350,12 @@ If a regression surfaces post-deploy:
 - `_shared/_legacy_combat/` still has the old files — `git revert` the swap PR and edge functions redeploy from old code
 - DB migrations applied during the swap are **not** reverted; they must have been designed forward-compatible with both engines at Step 0. If they weren't, that's a Step 0 blocker — don't open the PR in the first place.
 
+### Adjacent production fixes (not part of this migration)
+
+Bugs surfaced while building the harness that are unrelated to the engine swap but worth tracking so they don't get lost. Ship each as its own small PR, independent of the migration:
+
+- **`trade` is missing the "cannot act while in combat" guard.** Every other state-mutating edge function (`move`, `dump_cargo`, `ship_sell`, `ship_purchase`, `bank_transfer`, `transfer_credits`) loads `sector_contents.combat`, checks `characterId in combat.participants`, and returns 409 with a "cannot {verb} while in combat" message before mutating state. `trade` has no equivalent check, so a character can complete a trade mid-combat. The fix is a ~5-line copy of the [move/index.ts:306-324](deployment/supabase/functions/move/index.ts:306) pattern. Not a migration blocker, but should be closed out in the same sprint so the harness's combat assumptions match the real server surface.
+
 ### Controllers migration (Phase 6, separate lift)
 
 After the engine lands and bakes in production, promote `LLMController` from the harness into a real orchestration service. This is out of scope for the engine migration itself — it's a follow-up phase with its own spec.
@@ -369,7 +392,7 @@ Whichever path: `DecisionContext` builder, prompt, tool schemas, and failure han
 5. **Strategies spec churn.** The strategies rework is in flux. Don't build strategy *evaluation* into the engine — evaluation lives in controllers (Phase 5), not the engine. The engine only stores and exposes the strategy record.
 6. **LLM non-determinism in tests.** Never run `LLMController` in the golden suite — always `ScriptedController`. Engine tests stay deterministic; controller correctness lives in a separate, API-key-gated suite.
 7. **LLM failure surface.** Timeouts, rate limits, empty responses, hallucinated targets, missing required args. `LLMController` must surface each as a rejected `ActionResult` with a clear reason — never crash. Hard per-call timeout (20s default); abort on clock cancel.
-8. **API key in the bundle.** `VITE_OPENAI_API_KEY` ends up in the compiled JS. Acceptable because the app is local-only and never deployed, but the README + a loud in-app banner must call this out. `client/debug/.env.local` must be gitignored; verify before first commit.
+8. **API key in the bundle.** `VITE_OPENAI_API_KEY` ends up in the compiled JS. Acceptable because the app is local-only and never deployed, but the README + a loud in-app banner must call this out. `client/combat-sim/.env.local` must be gitignored; verify before first commit.
 9. **Cost + rate limits.** Cap max tokens per call; cap concurrent in-flight calls; surface live cost estimate in the UI; global kill switch that reverts all controllers to Manual.
 
 ---
@@ -377,33 +400,33 @@ Whichever path: `DecisionContext` builder, prompt, tool schemas, and failure han
 ## Critical files
 
 **New:**
-- `client/debug/package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, `src/main.tsx`, `src/App.tsx`
-- `client/debug/.env.local.example`
-- `client/debug/src/engine/engine.ts`
-- `client/debug/src/engine/types.ts`
-- `client/debug/src/engine/events.ts`
-- `client/debug/src/engine/resolution.ts`
-- `client/debug/src/engine/visibility.ts`
-- `client/debug/src/engine/emitter.ts`
-- `client/debug/src/engine/__tests__/golden.test.ts`
-- `client/debug/src/controllers/types.ts`
-- `client/debug/src/controllers/ControllerManager.ts`
-- `client/debug/src/controllers/ManualController.ts`
-- `client/debug/src/controllers/LLMController.ts`
-- `client/debug/src/controllers/ScriptedController.ts`
-- `client/debug/src/components/ScenarioBuilder.tsx`
-- `client/debug/src/components/EntityRoster.tsx`
-- `client/debug/src/components/EntityColumn.tsx`
-- `client/debug/src/components/EventLog.tsx`
-- `client/debug/src/components/ClockControls.tsx`
-- `client/debug/src/components/ControllerPicker.tsx`
-- `client/debug/src/components/DecisionTrace.tsx`
-- `client/debug/src/store/appStore.ts`
+- `client/combat-sim/package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, `src/main.tsx`, `src/App.tsx`
+- `client/combat-sim/.env.local.example`
+- `client/combat-sim/src/engine/engine.ts`
+- `client/combat-sim/src/engine/types.ts`
+- `client/combat-sim/src/engine/events.ts`
+- `client/combat-sim/src/engine/resolution.ts`
+- `client/combat-sim/src/engine/visibility.ts`
+- `client/combat-sim/src/engine/emitter.ts`
+- `client/combat-sim/src/engine/__tests__/golden.test.ts`
+- `client/combat-sim/src/controllers/types.ts`
+- `client/combat-sim/src/controllers/ControllerManager.ts`
+- `client/combat-sim/src/controllers/ManualController.ts`
+- `client/combat-sim/src/controllers/LLMController.ts`
+- `client/combat-sim/src/controllers/ScriptedController.ts`
+- `client/combat-sim/src/components/ScenarioBuilder.tsx`
+- `client/combat-sim/src/components/EntityRoster.tsx`
+- `client/combat-sim/src/components/EntityColumn.tsx`
+- `client/combat-sim/src/components/EventLog.tsx`
+- `client/combat-sim/src/components/ClockControls.tsx`
+- `client/combat-sim/src/components/ControllerPicker.tsx`
+- `client/combat-sim/src/components/DecisionTrace.tsx`
+- `client/combat-sim/src/store/appStore.ts`
 
 **Modified:**
-- `pnpm-workspace.yaml` — register `client/debug/`
+- `pnpm-workspace.yaml` — register `client/combat-sim/`
 - Root `package.json` — add `debug:dev` script
-- Root `.gitignore` — ensure `client/debug/.env.local` is excluded
+- Root `.gitignore` — ensure `client/combat-sim/.env.local` is excluded
 
 **No changes to `client/app/`, `deployment/`, or `src/gradientbang/`.** Zero production risk from this work.
 

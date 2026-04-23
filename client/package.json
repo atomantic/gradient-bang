@@ -15,7 +15,7 @@
     "dev:all": "turbo run dev stories",
     "dev:stories": "turbo run stories --filter=@gradient-bang/app",
     "dev:starfield": "turbo run dev:preview --filter=@gradient-bang/starfield",
-    "debug:dev": "turbo run dev --filter=@gradient-bang/debug",
+    "combat-sim:dev": "turbo run dev --filter=@gradient-bang/combat-sim",
     "build": "turbo run build",
     "build:app": "turbo run build --filter=@gradient-bang/app",
     "build:starfield": "turbo run build --filter=@gradient-bang/starfield",
