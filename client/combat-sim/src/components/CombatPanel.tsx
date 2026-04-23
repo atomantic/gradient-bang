@@ -97,7 +97,11 @@ function EncounterCard({
       <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
         {participants.map((p) =>
           p.combatant_type === "garrison" ? (
-            <GarrisonCard key={p.combatant_id} participant={p} />
+            <GarrisonCard
+              key={p.combatant_id}
+              encounter={encounter}
+              participant={p}
+            />
           ) : (
             <ParticipantDock
               key={p.combatant_id}
@@ -113,13 +117,36 @@ function EncounterCard({
 }
 
 function GarrisonCard({
+  encounter,
   participant,
 }: {
+  encounter: CombatEncounterState
   participant: CombatEncounterState["participants"][string]
 }) {
   const metadata = (participant.metadata ?? {}) as Record<string, unknown>
   const mode = String(metadata.mode ?? "offensive")
   const dead = participant.fighters <= 0
+  const ownerName =
+    (typeof metadata.owner_name === "string" ? metadata.owner_name : null) ??
+    participant.owner_character_id ??
+    null
+  const tollAmount =
+    typeof metadata.toll_amount === "number" ? metadata.toll_amount : 0
+
+  // Toll payment state for this combat (lives on encounter.context.toll_registry).
+  const registry = (encounter.context as Record<string, unknown> | undefined)
+    ?.toll_registry as
+    | Record<string, { paid?: boolean; paid_round?: number | null; toll_balance?: number }>
+    | undefined
+  const tollEntry = registry?.[participant.combatant_id]
+  const tollPaidThisRound =
+    mode === "toll" && tollEntry?.paid === true && tollEntry?.paid_round === encounter.round
+
+  // Show the garrison's last-round action + result so the user can see what
+  // the autonomous garrison actually did — otherwise the card just says
+  // "auto-controlled" and you have to dig into the event log to reconstruct.
+  const lastAction = encounter.ui_last_actions[participant.combatant_id]
+
   return (
     <div
       className={`rounded border p-2 text-xs ${
@@ -128,11 +155,40 @@ function GarrisonCard({
           : "border-sky-900/60 bg-sky-950/30"
       }`}
     >
-      <div className="flex items-baseline gap-2">
+      <div className="flex flex-wrap items-baseline gap-2">
         <span className="font-semibold text-neutral-100">{participant.name}</span>
         <span className="text-[11px] uppercase tracking-wider text-sky-400">{mode}</span>
+        {mode === "toll" && (
+          <span
+            className={`rounded border px-1 text-[9px] uppercase tracking-wider ${
+              tollPaidThisRound
+                ? "border-emerald-700 bg-emerald-950/50 text-emerald-300"
+                : tollEntry?.paid
+                  ? "border-amber-700 bg-amber-950/50 text-amber-300"
+                  : "border-neutral-700 bg-neutral-900 text-neutral-400"
+            }`}
+            title={
+              tollPaidThisRound
+                ? "Toll paid this round — standdown eligible if everyone else braces."
+                : tollEntry?.paid
+                  ? "Toll was paid in an earlier round; standdown window has closed until re-paid."
+                  : "Toll not yet paid."
+            }
+          >
+            {tollPaidThisRound
+              ? "paid · current"
+              : tollEntry?.paid
+                ? `paid · r${tollEntry.paid_round}`
+                : `${tollAmount}c unpaid`}
+          </span>
+        )}
+        {dead && (
+          <span className="rounded border border-rose-800 bg-rose-900/40 px-1 text-[9px] uppercase tracking-wider text-rose-200">
+            destroyed
+          </span>
+        )}
       </div>
-      <div className="mt-1 grid grid-cols-2 gap-2 text-[11px] text-neutral-400">
+      <div className="mt-1 grid grid-cols-3 gap-2 text-[11px] text-neutral-400">
         <div>
           fighters{" "}
           <span className="text-neutral-200">
@@ -140,11 +196,34 @@ function GarrisonCard({
           </span>
         </div>
         <div>
-          <span className="text-sky-300">auto-controlled</span>
+          {ownerName && (
+            <>
+              owner <span className="text-neutral-300">{ownerName}</span>
+            </>
+          )}
+        </div>
+        <div>
+          {dead ? (
+            <span className="text-rose-400">destroyed</span>
+          ) : lastAction ? (
+            <span className="text-neutral-400">
+              last: {formatGarrisonAction(lastAction)}
+            </span>
+          ) : (
+            <span className="text-sky-300">auto-controlled</span>
+          )}
         </div>
       </div>
     </div>
   )
+}
+
+function formatGarrisonAction(action: RoundActionState): string {
+  const base = action.action ?? "brace"
+  if (base === "attack") {
+    return `attack${action.commit ? ` (${action.commit})` : ""}`
+  }
+  return base
 }
 
 function ParticipantDock({

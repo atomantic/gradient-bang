@@ -66,6 +66,13 @@ export function buildTaskAgentSystemPrompt(options?: {
   includeCombatFragment?: boolean
   includeCombatStrategyFragment?: boolean
   strategy?: StrategyKind
+  /**
+   * Free-form text that REPLACES the canonical strategy fragment. When
+   * present + non-empty, it's wrapped in a "Combat style: CUSTOM" section
+   * and appended instead of `STRATEGY_FRAGMENTS[strategy]`. Useful for
+   * per-ship tactical experiments without editing the canonical snippets.
+   */
+  customStrategy?: string
 }): string {
   const parts = [gameOverview, howToLoadInfo, taskAgent]
   if (options?.includeCombatFragment !== false) {
@@ -74,7 +81,10 @@ export function buildTaskAgentSystemPrompt(options?: {
   if (options?.includeCombatStrategyFragment) {
     parts.push(combatStrategyFragment)
   }
-  if (options?.strategy && STRATEGY_FRAGMENTS[options.strategy]) {
+  const customTrim = options?.customStrategy?.trim()
+  if (customTrim) {
+    parts.push(`## Combat style: CUSTOM\n\n${customTrim}`)
+  } else if (options?.strategy && STRATEGY_FRAGMENTS[options.strategy]) {
     parts.push(STRATEGY_FRAGMENTS[options.strategy])
   }
   return parts.join("\n\n")

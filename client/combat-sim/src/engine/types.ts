@@ -198,7 +198,51 @@ export interface CombatEvent {
   combat_id?: CombatId
   sector_id?: SectorId
   timestamp: number
+  /**
+   * Harness-only annotation populated by `MockEventRelay` right after the
+   * event is emitted. One entry per recipient, recording the production
+   * append/inference decision for THAT viewer. Read by the event log UI to
+   * show "this event would have woken the voice agent from Alice's POV"
+   * markers. Does not exist in production — the field is optional and ports
+   * back as a no-op.
+   */
+  relay?: RelayDecision[]
 }
+
+/**
+ * Per-recipient routing decision produced by `MockEventRelay`. Mirrors the
+ * output of production's `EventRelay.handle_event()` — specifically the
+ * `should_append` + `should_run_llm` booleans at the end of the routing
+ * pipeline, plus the rule names that produced them so the debug UI can
+ * explain "why".
+ */
+export interface RelayDecision {
+  /** The entity (character or corp-ship pseudo) this decision is for. */
+  viewer: EntityId
+  /** Append rule configured for this event type. */
+  appendRule: AppendRule
+  /** Inference rule configured for this event type. */
+  inferenceRule: InferenceRule
+  /** Final decision: does this event land in the viewer's LLM context? */
+  append: boolean
+  /** Final decision: does appending this event trigger an LLM turn? */
+  run_llm: boolean
+  /** Human-readable "why this decision" for debug display. */
+  reason: string
+}
+
+/**
+ * Production: `subagents/event_relay.py:48-55`. The harness ports the five
+ * variants relevant to combat / garrison events; OWNED_TASK is out of scope
+ * (no tasks in the harness).
+ */
+export type AppendRule = "NEVER" | "PARTICIPANT" | "DIRECT" | "LOCAL" | "OWNED"
+
+/**
+ * Production: `subagents/event_relay.py:58-65`. VOICE_AGENT is omitted
+ * (harness doesn't track request-id provenance).
+ */
+export type InferenceRule = "NEVER" | "ALWAYS" | "ON_PARTICIPANT" | "OWNED"
 
 // ---- World ----
 

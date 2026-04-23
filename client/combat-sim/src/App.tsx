@@ -11,6 +11,7 @@ import { InMemoryEmitter } from "./engine/emitter"
 import { CombatEngine } from "./engine/engine"
 import { useEngineEvents } from "./hooks/useEngineEvents"
 import { useWorld } from "./hooks/useWorld"
+import { MockEventRelay } from "./relay/event_relay"
 import { useAppStore } from "./store/appStore"
 
 export function App() {
@@ -31,6 +32,19 @@ export function App() {
     },
     [engine, setTimerEnabledInStore],
   )
+
+  // MockEventRelay subscribes FIRST so every downstream subscriber
+  // (DebugAgent, ControllerManager, React event-log hook) sees the
+  // per-recipient append/run_llm annotations already attached to the
+  // event via `event.relay`.
+  const relay = useMemo(
+    () => new MockEventRelay({ engine, emitter }),
+    [engine, emitter],
+  )
+  useEffect(() => {
+    relay.start()
+    return () => relay.stop()
+  }, [relay])
 
   // ControllerManager is created once per engine and wired to the Zustand
   // store for trace capture + in-flight signaling.

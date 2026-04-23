@@ -3,7 +3,8 @@ import { useMemo, useState } from "react"
 import type { AgentMessage } from "../agent/debug_agent"
 import type { DecisionTrace } from "../controllers/types"
 import { useAppStore } from "../store/appStore"
-import type { CombatEvent, EntityId } from "../engine/types"
+import type { CombatEvent, EntityId, RelayDecision } from "../engine/types"
+import { decisionFor } from "../relay/event_relay"
 
 interface Props {
   events: readonly CombatEvent[]
@@ -430,6 +431,7 @@ function GenericEventRow({
   const [expanded, setExpanded] = useState(false)
   const direction = selectedId ? classifyDirection(event, selectedId) : null
   const typeColor = eventTypeColor(event.type)
+  const relayDecision = selectedId ? decisionFor(event, selectedId) : null
   return (
     <li className="rounded border border-neutral-800 bg-neutral-900/60">
       <button
@@ -439,6 +441,7 @@ function GenericEventRow({
       >
         <Chevron expanded={expanded} />
         {direction && <DirectionBadge direction={direction} />}
+        {relayDecision && <RelayBadge decision={relayDecision} />}
         <span className={`font-semibold ${typeColor}`}>{event.type}</span>
         {event.actor && (
           <span className="text-[11px] text-neutral-500">
@@ -461,9 +464,85 @@ function GenericEventRow({
               <span className="font-mono text-neutral-400">{event.recipients.join(", ")}</span>
             </div>
           )}
+          {event.relay && event.relay.length > 0 && (
+            <div className="mt-1 text-[11px] text-neutral-500">
+              <div className="mb-0.5 uppercase tracking-wider text-[9px] text-neutral-600">
+                relay decisions (per recipient)
+              </div>
+              <table className="w-full text-left text-[10px]">
+                <tbody>
+                  {event.relay.map((d) => (
+                    <tr key={d.viewer} className="border-t border-neutral-800/50">
+                      <td className="py-0.5 pr-2 font-mono text-neutral-400">
+                        {d.viewer}
+                      </td>
+                      <td className="pr-2 text-neutral-500">{d.appendRule}</td>
+                      <td className="pr-2 text-neutral-500">{d.inferenceRule}</td>
+                      <td className="pr-2">
+                        <span
+                          className={
+                            d.append ? "text-emerald-400" : "text-neutral-600"
+                          }
+                        >
+                          append={d.append ? "yes" : "no"}
+                        </span>
+                      </td>
+                      <td className="pr-2">
+                        <span
+                          className={
+                            d.run_llm ? "text-amber-300" : "text-neutral-600"
+                          }
+                        >
+                          run_llm={d.run_llm ? "yes" : "no"}
+                        </span>
+                      </td>
+                      <td className="text-neutral-600">{d.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </li>
+  )
+}
+
+/**
+ * Per-event, per-viewer inline badge. Rendered only when a POV entity is
+ * selected — shows at a glance whether this event woke that entity's LLM
+ * (amber "LLM"), landed silently in context ("ctx"), or was dropped
+ * entirely ("—"). Hover reveals the full AppendRule/InferenceRule reason.
+ */
+function RelayBadge({ decision }: { decision: RelayDecision }) {
+  let label: string
+  let styles: string
+  if (decision.run_llm) {
+    label = "LLM"
+    styles = "border-amber-500 bg-amber-900/50 text-amber-100"
+  } else if (decision.append) {
+    label = "ctx"
+    styles = "border-cyan-800 bg-cyan-950/40 text-cyan-300"
+  } else {
+    label = "—"
+    styles = "border-neutral-800 bg-neutral-950 text-neutral-600"
+  }
+  const title =
+    `${decision.appendRule} / ${decision.inferenceRule}\n` +
+    decision.reason +
+    (decision.run_llm
+      ? "\nWOULD have triggered LLM inference from this ship's POV."
+      : decision.append
+        ? "\nAppended to LLM context silently; no inference."
+        : "\nNot delivered to this viewer's context.")
+  return (
+    <span
+      title={title}
+      className={`rounded border px-1 text-[9px] uppercase tracking-wider ${styles}`}
+    >
+      {label}
+    </span>
   )
 }
 

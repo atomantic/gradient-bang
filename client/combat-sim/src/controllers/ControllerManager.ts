@@ -219,6 +219,7 @@ export class ControllerManager {
       corporation,
       includeCombatStrategyFragment: true,
       strategy: config.strategy,
+      customStrategy: config.customStrategy,
       llm: new OpenAILLMClient({ model: config.model }),
     })
     agent.start("You are in combat. Decide and submit an action for each round.")

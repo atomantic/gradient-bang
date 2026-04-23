@@ -106,6 +106,11 @@ export interface DebugAgentOpts {
   includeCombatStrategyFragment?: boolean
   /** Harness-only style override snippet appended after combat_strategy.md. */
   strategy?: StrategyKind
+  /**
+   * Free-form text that replaces the canonical `strategy` fragment when
+   * set. Takes precedence over `strategy` in the prompt assembly.
+   */
+  customStrategy?: string
   /** Tool set handed to the LLM. Default: COMBAT_STRATEGY_TOOLS. */
   tools?: ToolSchema[]
   /** my_status snapshot injected into the agent's initial context. */
@@ -155,6 +160,7 @@ export class DebugAgent {
       includeCombatFragment: opts.includeCombatFragment ?? true,
       includeCombatStrategyFragment: opts.includeCombatStrategyFragment ?? false,
       strategy: opts.strategy,
+      customStrategy: opts.customStrategy,
     })
     // Derive the viewer context once — drives corp-mate detection in the
     // event XML filter so the agent sees combat events involving its own

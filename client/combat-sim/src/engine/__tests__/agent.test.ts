@@ -374,6 +374,45 @@ describe("DebugAgent — combat_strategy.md fragment", () => {
     expect(PROMPT_FRAGMENTS.combatStrategy).toContain("# Combat Strategy")
   })
 
+  it("customStrategy overrides the canonical strategy fragment", () => {
+    const { engine, emitter } = makeHarness()
+    const agent = new DebugAgent({
+      engine,
+      emitter,
+      characterId: "char-placeholder",
+      includeCombatStrategyFragment: true,
+      strategy: "offensive",
+      customStrategy:
+        "RAM the biggest enemy. Never flee. If destroyed, it was worth it.",
+    })
+    // The canonical OFFENSIVE_STRATEGY snippet's opener MUST NOT appear
+    // (it should have been replaced by the custom override).
+    expect(agent.systemPrompt).not.toContain(
+      "You play aggressively. Default to ATTACK whenever you have a valid hostile target.",
+    )
+    // The custom text IS in the prompt, wrapped in the "## Combat style: CUSTOM" header.
+    expect(agent.systemPrompt).toContain("## Combat style: CUSTOM")
+    expect(agent.systemPrompt).toContain(
+      "RAM the biggest enemy. Never flee. If destroyed, it was worth it.",
+    )
+  })
+
+  it("empty customStrategy falls back to the named canonical strategy", () => {
+    const { engine, emitter } = makeHarness()
+    const agent = new DebugAgent({
+      engine,
+      emitter,
+      characterId: "char-placeholder",
+      includeCombatStrategyFragment: true,
+      strategy: "defensive",
+      customStrategy: "   ", // whitespace-only → treated as not set
+    })
+    expect(agent.systemPrompt).not.toContain("## Combat style: CUSTOM")
+    expect(agent.systemPrompt).toContain(
+      "You play cautiously. Default to BRACE unless you have a clear advantage.",
+    )
+  })
+
   it("default tool set exposes combat_action with production-shaped schema", () => {
     const { engine, emitter } = makeHarness()
     const agent = new DebugAgent({

@@ -34,6 +34,19 @@ function entityInActiveCombat(world: World, id: string): boolean {
   return false
 }
 
+function findActiveCombatForEntity(
+  world: World,
+  id: string,
+): { round: number; combat_id: string } | null {
+  for (const encounter of world.activeCombats.values()) {
+    if (encounter.ended) continue
+    if (id in encounter.participants) {
+      return { round: encounter.round, combat_id: encounter.combat_id }
+    }
+  }
+  return null
+}
+
 export function EntityRoster({ engine, world, onSetController }: Props) {
   const selectedId = useAppStore((s) => s.selectedEntityId)
   const toggle = useAppStore((s) => s.toggleEntity)
@@ -129,6 +142,7 @@ export function EntityRoster({ engine, world, onSetController }: Props) {
                     entityId={combatantId}
                     onSetController={onSetController}
                     disabled={locked}
+                    displayLabel={s.name ?? s.id}
                   />
                 </div>
               </div>
@@ -142,6 +156,11 @@ export function EntityRoster({ engine, world, onSetController }: Props) {
             const combatantId = `garrison:${g.sector}:${g.ownerCharacterId}` as EntityId
             const selected = selectedId === combatantId
             const owner = world.characters.get(g.ownerCharacterId)
+            // A garrison in combat has `combatantId in encounter.participants`.
+            // Without this badge the only way to know a garrison just auto-
+            // triggered (or was pulled into) a fight was to scan the event
+            // log — easy to miss.
+            const inCombatEncounter = findActiveCombatForEntity(world, combatantId)
             return (
               <button
                 key={g.id}
@@ -171,6 +190,11 @@ export function EntityRoster({ engine, world, onSetController }: Props) {
                     {g.mode}
                     {g.mode === "toll" ? ` · ${g.tollAmount}c` : ""}
                   </span>
+                  {inCombatEncounter && (
+                    <span className="rounded border border-rose-800 bg-rose-900/40 px-1 text-[10px] uppercase tracking-wider text-rose-200">
+                      combat · r{inCombatEncounter.round}
+                    </span>
+                  )}
                 </div>
                 <StatLine sector={g.sector} fighters={g.fighters} id={g.id} />
               </button>
@@ -323,6 +347,7 @@ function CharacterTile({
           entityId={character.id}
           onSetController={onSetController}
           disabled={inCombat}
+          displayLabel={character.name}
         />
       </div>
       <div className="flex flex-wrap items-center gap-1 px-1 text-[10px] text-neutral-500">

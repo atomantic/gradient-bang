@@ -13,6 +13,14 @@ export interface ControllerConfig {
    * combat_strategy.md. Locked once combat is active (UI enforces).
    */
   strategy?: StrategyKind
+  /**
+   * Free-form override: when set (non-empty), this text replaces the
+   * canonical `strategy` fragment that would otherwise be appended. Lets
+   * an operator hand-tune tactics per ship before combat starts (e.g.
+   * "ATTACK Bob every round with commit=30; ignore everyone else").
+   * Also locked once combat is active.
+   */
+  customStrategy?: string
 }
 
 /**

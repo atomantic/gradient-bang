@@ -1,12 +1,17 @@
+import { useState } from "react"
+
 import type { ControllerConfig } from "../controllers/types"
 import { useAppStore } from "../store/appStore"
 import type { EntityId } from "../engine/types"
+import { StrategyEditorModal } from "./StrategyEditorModal"
 
 interface Props {
   entityId: EntityId
   onSetController: (id: string, config: ControllerConfig | null) => void
   /** True when the entity is a participant in an active combat — locks the config. */
   disabled?: boolean
+  /** Display label shown in the strategy editor header. Defaults to entityId. */
+  displayLabel?: string
 }
 
 /** Models exposed in the dropdown. Add here when new ones land. */
@@ -25,13 +30,20 @@ const STRATEGIES = [
   { value: "defensive", label: "defensive" },
 ] as const
 
-export function ControllerPicker({ entityId, onSetController, disabled }: Props) {
+export function ControllerPicker({
+  entityId,
+  onSetController,
+  disabled,
+  displayLabel,
+}: Props) {
   const controller = useAppStore((s) => s.controllers[entityId])
   const inFlight = useAppStore((s) => (s.inFlight[entityId] ?? 0) > 0)
+  const [editorOpen, setEditorOpen] = useState(false)
 
   const kind = controller?.kind ?? "manual"
   const model = controller?.model ?? "gpt-4.1"
   const strategy = controller?.strategy ?? "balanced"
+  const hasCustomStrategy = Boolean(controller?.customStrategy?.trim())
 
   const setKind = (v: "manual" | "llm") => {
     if (v === "manual") onSetController(entityId, null)
@@ -40,6 +52,7 @@ export function ControllerPicker({ entityId, onSetController, disabled }: Props)
         kind: "llm",
         model,
         strategy: controller?.strategy ?? "balanced",
+        customStrategy: controller?.customStrategy,
       })
   }
 
@@ -48,12 +61,18 @@ export function ControllerPicker({ entityId, onSetController, disabled }: Props)
       kind: "llm",
       model: v,
       strategy: controller?.strategy ?? "balanced",
+      customStrategy: controller?.customStrategy,
     })
   }
 
   const setStrategy = (v: string) => {
     const strat = v as "offensive" | "defensive" | "balanced"
-    onSetController(entityId, { kind: "llm", model, strategy: strat })
+    onSetController(entityId, {
+      kind: "llm",
+      model,
+      strategy: strat,
+      customStrategy: controller?.customStrategy,
+    })
   }
 
   return (
@@ -100,15 +119,27 @@ export function ControllerPicker({ entityId, onSetController, disabled }: Props)
               </option>
             ))}
           </select>
-          <span
-            className={`rounded border px-1 text-[9px] uppercase tracking-wider ${
+          <button
+            type="button"
+            onClick={() => setEditorOpen(true)}
+            disabled={disabled}
+            title={
+              disabled
+                ? "Custom strategy is locked during active combat"
+                : hasCustomStrategy
+                  ? "Click to edit the custom strategy override"
+                  : "Click to write a custom strategy for this ship"
+            }
+            className={`rounded border px-1 text-[9px] uppercase tracking-wider transition disabled:cursor-not-allowed disabled:opacity-60 ${
               inFlight
                 ? "animate-pulse border-amber-400 bg-amber-900/50 text-amber-100"
-                : "border-amber-700 bg-amber-950/50 text-amber-300"
+                : hasCustomStrategy
+                  ? "border-fuchsia-500 bg-fuchsia-900/60 text-fuchsia-100 hover:bg-fuchsia-900/80"
+                  : "border-amber-700 bg-amber-950/50 text-amber-300 hover:bg-amber-900/40"
             }`}
           >
-            {inFlight ? "thinking" : "AI"}
-          </span>
+            {inFlight ? "thinking" : hasCustomStrategy ? "AI · custom" : "AI"}
+          </button>
           {disabled && (
             <span
               title="Controller config locked while this entity is in active combat"
@@ -118,6 +149,15 @@ export function ControllerPicker({ entityId, onSetController, disabled }: Props)
             </span>
           )}
         </>
+      )}
+      {controller?.kind === "llm" && (
+        <StrategyEditorModal
+          open={editorOpen}
+          onClose={() => setEditorOpen(false)}
+          label={displayLabel ?? entityId}
+          config={controller}
+          onSave={(next) => onSetController(entityId, next)}
+        />
       )}
     </div>
   )

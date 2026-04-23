@@ -344,6 +344,8 @@ Structure:
 
 After the initial summary, the user may ask follow-up questions about any round, agent, or decision. Answer them directly, grounded in the digest. If the question references a round or agent that isn't in the digest, say so. Keep answers tight — a few sentences is usually right — and quote from the digest when it helps.
 
+When asked whether a specific viewer received an event (e.g. "did Bob see garrison.destroyed?"): consult the "Destruction events" block's \`recipients: […]\` line and the \`relay:\` line. Those are authoritative — \`append=yes\` means the event landed in that viewer's LLM context, \`run_llm=yes\` means inference was triggered on it. Do NOT infer receipt from the agent's situation text alone.
+
 Style:
 - Be specific. Use ship names, numbers, and the agents' own words where they're punchy.
 - Call out contradictions between an agent's stated reasoning and the actual outcome.
@@ -405,7 +407,9 @@ function buildDigest(
       if (typeof (ev.sector_id as unknown) === "number") g.sector_id = ev.sector_id as number
     }
     if (ev.type === "combat.ended") g.ended = ev
-    if (ev.type === "ship.destroyed") g.destroyed.push(ev)
+    if (ev.type === "ship.destroyed" || ev.type === "garrison.destroyed") {
+      g.destroyed.push(ev)
+    }
   }
 
   // Group traces by combat_id + round.
@@ -515,12 +519,40 @@ function buildDigest(
     }
 
     if (g.destroyed.length > 0) {
-      out.push("### Destroyed ships")
+      out.push("### Destruction events")
       for (const ev of g.destroyed) {
         const p = ev.payload as Record<string, unknown>
-        const label = `${p.ship_name ?? p.ship_type ?? "?"} (${p.player_type ?? "?"})`
-        const pilot = p.player_name ?? "unknown"
-        out.push(`- ${label} [ship_id=${p.ship_id}] · pilot ${pilot}`)
+        if (ev.type === "ship.destroyed") {
+          const label = `${p.ship_name ?? p.ship_type ?? "?"} (${p.player_type ?? "?"})`
+          const pilot = p.player_name ?? "unknown"
+          out.push(
+            `- ship.destroyed: ${label} [ship_id=${p.ship_id}] · pilot ${pilot}`,
+          )
+        } else {
+          // garrison.destroyed
+          const owner = p.owner_name ?? "unknown"
+          const mode = p.mode ?? "?"
+          out.push(
+            `- garrison.destroyed: [garrison_id=${p.garrison_id}] · owner ${owner} · mode ${mode}`,
+          )
+        }
+        // Recipient + relay-decision line so the summarizer can answer
+        // "did X receive this event?" and "did X's agent wake up?"
+        // authoritatively, rather than inferring from agent situation text.
+        const recipients = ev.recipients.map((r) => nameFor(r)).join(", ")
+        out.push(`  recipients: [${recipients}]`)
+        if (ev.relay && ev.relay.length > 0) {
+          const signals = ev.relay
+            .map((d) => {
+              const who = nameFor(d.viewer)
+              const parts: string[] = []
+              parts.push(`append=${d.append ? "yes" : "no"}`)
+              parts.push(`run_llm=${d.run_llm ? "yes" : "no"}`)
+              return `${who} (${parts.join(", ")})`
+            })
+            .join("; ")
+          out.push(`  relay: ${signals}`)
+        }
       }
       out.push("")
     }
