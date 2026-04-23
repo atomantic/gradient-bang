@@ -431,6 +431,12 @@ const RANDOM_GARRISON_MODES: GarrisonMode[] = [
   "toll",
 ]
 
+const RANDOM_STRATEGIES: Array<"balanced" | "offensive" | "defensive"> = [
+  "balanced",
+  "offensive",
+  "defensive",
+]
+
 function pick<T>(arr: readonly T[], rng: () => number): T {
   return arr[Math.floor(rng() * arr.length)]
 }
@@ -450,6 +456,8 @@ function generateRandomScenario(
   const rng = Math.random
 
   // 2–4 player characters, all in sector 42 so they start entangled.
+  // Each gets a random strategy so a single run exercises all three and
+  // (with enough rerolls) every pairwise matchup.
   const charCount = randInt(2, 4, rng)
   const chars: string[] = []
   for (let i = 0; i < charCount; i++) {
@@ -457,7 +465,10 @@ function generateRandomScenario(
     const shipType = pick(RANDOM_CHAR_SHIPS, rng)
     const id = engine.createCharacter({ name, sector: 42, shipType })
     chars.push(id)
-    onSetController(id, { ...defaultLLMConfig })
+    onSetController(id, {
+      ...defaultLLMConfig,
+      strategy: pick(RANDOM_STRATEGIES, rng),
+    })
   }
 
   // 0–2 corps. Each gets 0–2 random characters as members.
@@ -496,7 +507,10 @@ function generateRandomScenario(
           sector: 42,
           shipType,
         })
-        onSetController(sid, { ...defaultLLMConfig })
+        onSetController(sid, {
+          ...defaultLLMConfig,
+          strategy: pick(RANDOM_STRATEGIES, rng),
+        })
       } catch {
         // e.g. dead corp; skip.
       }
